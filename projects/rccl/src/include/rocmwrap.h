@@ -17,7 +17,8 @@
 
 // HIP: implemented in rma_proxy_launch.cc (hipStreamBatchMemOp + old-HIP fallback).
 // CUDA: implemented in cudawrap.cc (cuStreamBatchMemOp).
-ncclResult_t ncclCuStreamBatchMemOp(cudaStream_t stream, unsigned int numOps, CUstreamBatchMemOpParams* batchParams);
+ncclResult_t ncclCuStreamBatchMemOp(cudaStream_t stream, unsigned int numOps,
+                                    CUstreamBatchMemOpParams* batchParams);
 
 typedef hsa_status_t (*PFN_hsa_init)();
 typedef hsa_status_t (*PFN_hsa_system_get_info)(hsa_system_info_t attribute, void* value);
