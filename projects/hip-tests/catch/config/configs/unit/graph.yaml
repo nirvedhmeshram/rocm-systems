@@ -1231,7 +1231,7 @@ graph:
     <<: *level_default
     tags: [capture]
   Unit_hipLaunchHostFunc_CrossStreamDep_UncapturedFirstNode:
-    <<: *level_2
+    <<: *level_default
     # Hangs on Windows (PAL), hitting CI timeout; passes on Linux.
     # https://github.com/ROCm/rocm-systems/issues/7148
     disabled: [amd_windows, amd_wsl]
