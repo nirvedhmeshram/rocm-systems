@@ -1734,22 +1734,52 @@ class TestAmdSmiPython(unittest.TestCase):
     def test_status_code_to_string(self):
         self.common.print_func_name("")
 
-        if self.common.TODO_SKIP_FAIL:
-            msg = "\tSkipping test_status_code_to_string as it fails (Unhashable type)."
-            self.common.print(msg)
-            self.skipTest(msg)
-
-        for error_num, _ in self.common.error_map.items():
-            msg = f"\t### amdsmi_status_code_to_string(error_num={error_num}):"
+        # Exercise every amdsmi status code except the two sentinels below. A
+        # valid code must resolve to a description that starts with its own enum
+        # name and must never fall through to a sentinel description:
+        #   * AMDSMI_STATUS_UNKNOWN_ERROR — a `case` is missing from
+        #     amdsmi_status_code_to_string() (e.g. AMDSMI_STATUS_TIMEOUT /
+        #     AMDSMI_STATUS_MORE_DATA fell through to the default branch).
+        #   * AMDSMI_STATUS_MAP_ERROR — a lower-level status (rsmi / esmi / nic)
+        #     has no equivalent amdsmi mapping, so rsmi_to_amdsmi_status() /
+        #     esmi_to_amdsmi_status() / ainic_to_amdsmi_status() returned the
+        #     map-error sentinel.
+        # Either case is a real gap and must fail the test so it cannot recur.
+        sentinel_descs = ("AMDSMI_STATUS_UNKNOWN_ERROR", "AMDSMI_STATUS_MAP_ERROR")
+        for status in amdsmi.AmdSmiStatus:
+            error_name = f"AMDSMI_STATUS_{status.name}"
+            # The sentinels themselves legitimately resolve to their own
+            # description, so don't test them against the sentinel guard.
+            if error_name in sentinel_descs:
+                continue
+            msg = f"\t### amdsmi_status_code_to_string({error_name}={status.value}):"
             try:
-                ret = amdsmi.amdsmi_status_code_to_string(ctypes.c_uint32(int(error_num, 0)))
+                ret = amdsmi.amdsmi_status_code_to_string(ctypes.c_uint32(status.value))
                 self.common.print(msg, ret)
             except amdsmi.AmdSmiLibraryException as e:
-                if self.common.check_ret(msg, e, self.common.PASS):
-                    self.raise_exception = e
+                # A valid status code must always resolve to a description.
+                self.fail(f"{msg} raised for valid status code {status.value}: {e}")
+
+            # string_cast may return bytes; normalize for comparison.
+            ret_str = ret.decode("utf-8") if isinstance(ret, bytes) else str(ret)
+
+            # Regression guard: a valid code must not resolve to either sentinel
+            # description (UNKNOWN_ERROR -> missing case; MAP_ERROR -> missing
+            # lower-level status mapping).
+            for sentinel in sentinel_descs:
+                self.assertFalse(
+                    ret_str.startswith(sentinel),
+                    f"{msg} resolved to '{sentinel}'; a case is missing from "
+                    f"amdsmi_status_code_to_string() or a lower-level status has "
+                    f"no amdsmi mapping.",
+                )
+
+            # Every code's description must begin with its own enum name.
+            self.assertTrue(
+                ret_str.startswith(error_name),
+                f"{msg} expected description to start with '{error_name}', got '{ret_str}'.",
+            )
             self.common.print("")
-        if self.raise_exception:
-            raise self.raise_exception
         return
 
     def test_topo_get_link_type(self):
