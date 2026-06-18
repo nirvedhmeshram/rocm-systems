@@ -76,6 +76,16 @@ static int connect_to_daemon() {
 
 namespace {
 
+#if defined(__clang__) && defined(__has_attribute) &&                                              \
+    __has_attribute(disable_sanitizer_instrumentation)
+#define RJ_NO_SANITIZE_INTERPOSER __attribute__((disable_sanitizer_instrumentation))
+#elif defined(__GNUC__)
+#define RJ_NO_SANITIZE_INTERPOSER                                                                  \
+  __attribute__((no_sanitize_address, no_sanitize_thread, no_sanitize_undefined))
+#else
+#define RJ_NO_SANITIZE_INTERPOSER
+#endif
+
 void rj_sigsegv_handler(int, siginfo_t *, void *) {
   signal(SIGSEGV, SIG_DFL);
   raise(SIGSEGV);
@@ -114,7 +124,7 @@ public:
   ssize_t (*readlink_fn)(const char *, char *, size_t) = nullptr;
   pid_t (*fork)() = nullptr;
 
-  bool ready() const { return initialized_; }
+  RJ_NO_SANITIZE_INTERPOSER bool ready() const { return initialized_; }
 
   void resolve() {
     auto *handle = RTLD_NEXT;
@@ -429,7 +439,7 @@ InterposerContext &InterposerContext::ctx =
 
 static void *(*real_dlsym_fn)(void *, const char *) = nullptr;
 
-__attribute__((constructor(101))) static void resolve_real_dlsym() {
+RJ_NO_SANITIZE_INTERPOSER __attribute__((constructor(101))) static void resolve_real_dlsym() {
   real_dlsym_fn =
       reinterpret_cast<decltype(real_dlsym_fn)>(dlvsym(RTLD_NEXT, "dlsym", "GLIBC_2.34"));
   if (!real_dlsym_fn)
@@ -1736,7 +1746,13 @@ int drmGetDevices2(uint32_t /*flags*/, drmDevice **devices, int max_devices) {
 // drmFreeDevice/drmFreeDevices are intentionally excluded: our own
 // drmFreeDevice fallback calls dlsym(RTLD_NEXT, "drmFreeDevice") and
 // including it here would cause infinite recursion.
-void *dlsym(void *handle, const char *symbol) {
+RJ_NO_SANITIZE_INTERPOSER void *dlsym(void *handle, const char *symbol) {
+  if (!real_dlsym_fn) {
+    // Called before resolve_real_dlsym constructor runs (e.g., during
+    // dynamic linker symbol resolution at library load time). Resolve the real
+    // dlsym now before touching interposer state or sanitizer-initialized code.
+    resolve_real_dlsym();
+  }
   auto symbol_addr = reinterpret_cast<uintptr_t>(symbol);
   if (symbol_addr != 0 && InterposerContext::real.ready()) {
     static const std::unordered_map<std::string_view, void *> overrides = {
@@ -1751,12 +1767,6 @@ void *dlsym(void *handle, const char *symbol) {
     if (it != overrides.end())
       return it->second;
   }
-  if (real_dlsym_fn)
-    return real_dlsym_fn(handle, symbol);
-  // Called before resolve_real_dlsym constructor runs (e.g., during
-  // dynamic linker symbol resolution at library load time).  Resolve
-  // the real dlsym now and forward.
-  resolve_real_dlsym();
   return real_dlsym_fn(handle, symbol);
 }
 
@@ -1769,3 +1779,5 @@ pid_t fork() {
 }
 
 } // extern "C"
+
+#undef RJ_NO_SANITIZE_INTERPOSER
