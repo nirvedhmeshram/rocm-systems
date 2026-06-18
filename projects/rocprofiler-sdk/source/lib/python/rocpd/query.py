@@ -55,6 +55,7 @@ def _resolve_blob_format(is_integral: bool, is_signed: bool, size: int):
         return {1: "b", 2: "h", 4: "i", 8: "q"}.get(size)
     return {1: "B", 2: "H", 4: "I", 8: "Q"}.get(size)
 
+
 _BLOB_DECODED_SUFFIX = "_decoded"
 
 
@@ -125,8 +126,7 @@ def _load_all_blob_schemas(conn, schema_table: str, field_table: str):
     has_source_table = "source_table" in schema_cols
 
     if has_source_table:
-        rows = conn.execute(
-            f"""
+        rows = conn.execute(f"""
             SELECT
                 S.source_table,
                 S.id,
@@ -140,12 +140,10 @@ def _load_all_blob_schemas(conn, schema_table: str, field_table: str):
             INNER JOIN {field_table} F ON F.schema_id = S.id
             WHERE S.source_table IS NOT NULL
             ORDER BY S.source_table, S.id, F.offset
-            """
-        ).fetchall()
+            """).fetchall()
     else:
         # Backward compatibility: older DBs without source_table column.
-        rows = conn.execute(
-            f"""
+        rows = conn.execute(f"""
             SELECT
                 NULL AS source_table,
                 S.id,
@@ -158,11 +156,19 @@ def _load_all_blob_schemas(conn, schema_table: str, field_table: str):
             FROM {schema_table} S
             INNER JOIN {field_table} F ON F.schema_id = S.id
             ORDER BY S.id, F.offset
-            """
-        ).fetchall()
+            """).fetchall()
 
     by_table = {}
-    for source_table, schema_id, byte_order, name, offset, size, data_type, is_signed in rows:
+    for (
+        source_table,
+        schema_id,
+        byte_order,
+        name,
+        offset,
+        size,
+        data_type,
+        is_signed,
+    ) in rows:
         key = source_table or "__unknown__"
         if key not in by_table:
             by_table[key] = {"schema_map": {}, "all_fields": [], "field_seen": set()}
@@ -262,7 +268,9 @@ def setup_blob_views(conn, query: str = None, profile: bool = False):
     for schema_map, _ in all_schemas.values():
         merged_schema_map.update(schema_map)
 
-    conn.create_function("rocpd_blob_field", 3, _make_blob_field_function(merged_schema_map))
+    conn.create_function(
+        "rocpd_blob_field", 3, _make_blob_field_function(merged_schema_map)
+    )
 
     views_created = []
     for source_table, (schema_map, all_blob_fields) in all_schemas.items():
@@ -290,7 +298,9 @@ def setup_blob_views(conn, query: str = None, profile: bool = False):
             and "event_id" in base_columns
             and "blob_event_id" not in base_columns
         )
-        use_blob_event_id = blob_event_table is not None and "blob_event_id" in base_columns
+        use_blob_event_id = (
+            blob_event_table is not None and "blob_event_id" in base_columns
+        )
         use_inline = {"extdata_blob", "extdata_schema_id"}.issubset(base_columns)
 
         computed_columns = ",\n        ".join(

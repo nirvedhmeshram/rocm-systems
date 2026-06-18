@@ -115,8 +115,9 @@ struct blob_data
 
 struct sql_insert_value
 {
-    std::string_view                                                                               name  = {};
-    std::variant<std::monostate, int64_t, uint64_t, double, std::string, std::nullptr_t, blob_data> value = {};
+    std::string_view name = {};
+    std::variant<std::monostate, int64_t, uint64_t, double, std::string, std::nullptr_t, blob_data>
+        value = {};
 };
 
 struct pending_insert_batch
@@ -466,10 +467,10 @@ bind_sql_value(sqlite3_stmt* stmt, int idx, const sql_insert_value& value)
             else if constexpr(std::is_same_v<value_type, blob_data>)
             {
                 return sqlite3_bind_blob(stmt,
-                                        idx,
-                                        val.bytes.data(),
-                                        static_cast<int>(val.bytes.size()),
-                                        SQLITE_TRANSIENT);
+                                         idx,
+                                         val.bytes.data(),
+                                         static_cast<int>(val.bytes.size()),
+                                         SQLITE_TRANSIENT);
             }
             else
             {
@@ -577,8 +578,8 @@ get_or_prepare_batch_statement(rocpd_db&                   db,
     ROCP_FATAL_IF(prepare_rc != SQLITE_OK)
         << "sqlite3_prepare_v2 failed with error code " << prepare_rc
         << ", sqlite3_errmsg: " << sqlite3_errmsg(db.conn) << ", table: " << pending.table
-        << ", rows_per_exec: " << rows_per_exec
-        << ", field_count: " << pending.fields.size() << ", sql: " << sql;
+        << ", rows_per_exec: " << rows_per_exec << ", field_count: " << pending.fields.size()
+        << ", sql: " << sql;
     return stmt;
 }
 
@@ -1083,8 +1084,8 @@ write_rocpd(
     const generator<rocprofiler_buffer_tracing_rccl_api_record_t>&          rccl_api_gen,
     const generator<rocprofiler_buffer_tracing_rocdecode_api_ext_record_t>& rocdecode_api_gen,
     const generator<tool_counter_record_t>&                                 counter_collection_gen,
-    const generator<rocprofiler_tool_pc_sampling_host_trap_record_t>&       pc_sampling_host_trap_gen,
-    const generator<rocprofiler_tool_pc_sampling_stochastic_record_t>&      pc_sampling_stochastic_gen,
+    const generator<rocprofiler_tool_pc_sampling_host_trap_record_t>&  pc_sampling_host_trap_gen,
+    const generator<rocprofiler_tool_pc_sampling_stochastic_record_t>& pc_sampling_stochastic_gen,
     const generator<tool_spm_counter_record_t>& /** spm_collection_gen*/)
 {
     static auto get_simple_timer = [](std::string_view label) {
@@ -1494,8 +1495,8 @@ write_rocpd(
     };
 
     auto insert_kernel_dispatch_data = [&, node_id, this_pid](auto& dispatch_evt_ids,
-                                                               auto& dispatch_agent_ids,
-                                                               auto& dispatch_thread_ids) {
+                                                              auto& dispatch_agent_ids,
+                                                              auto& dispatch_thread_ids) {
         auto _sqlgenperf_rocpd = get_simple_timer("rocpd_kernel_dispatch");
         auto _deferred         = sql::deferred_transaction{db.conn};
 
@@ -2103,12 +2104,12 @@ write_rocpd(
         uint32_t hw_id_queue_id         = 0;
         uint32_t hw_id_microengine_id   = 0;
         // Generic PC sample fields retained for decode, not stored in base table.
-        uint64_t code_object_id            = 0;
-        uint64_t code_object_offset        = 0;
-        uint32_t wave_in_group             = 0;
-        uint32_t workgroup_id_x            = 0;
-        uint32_t workgroup_id_y            = 0;
-        uint32_t workgroup_id_z            = 0;
+        uint64_t code_object_id     = 0;
+        uint64_t code_object_offset = 0;
+        uint32_t wave_in_group      = 0;
+        uint32_t workgroup_id_x     = 0;
+        uint32_t workgroup_id_y     = 0;
+        uint32_t workgroup_id_z     = 0;
         // arbiter-state fields (stochastic only; remain zero for host-trap)
         uint8_t dual_issue_valu            = 0;
         uint8_t arb_state_issue_valu       = 0;
@@ -2146,22 +2147,22 @@ write_rocpd(
 
         auto _deferred = sql::deferred_transaction{db.conn};
 
-        get_insert_statement(db,
-                             "rocpd_info_blob_schema{{uuid}}",
-                             {
-                                 insert_value("nid", node_id),
-                                 insert_value("pid", this_pid),
-                                 insert_value("name", std::string{"pc_sample_extdata_v1"}),
-                                 insert_value("source_table", std::string{"rocpd_gpu_pc_sample"}),
-                                 insert_value("description",
-                                              std::string{"PC sampling arch-specific fields (packed)"},
-                                              allow_empty_string{}),
-                                 insert_value("byte_order", std::string{"little"}),
-                                 insert_value("alignment", int64_t{1}),
-                                 insert_value("struct_size",
-                                              static_cast<int64_t>(sizeof(pc_sample_extdata_v1))),
-                                 insert_value("version", int64_t{1}),
-                             });
+        get_insert_statement(
+            db,
+            "rocpd_info_blob_schema{{uuid}}",
+            {
+                insert_value("nid", node_id),
+                insert_value("pid", this_pid),
+                insert_value("name", std::string{"pc_sample_extdata_v1"}),
+                insert_value("source_table", std::string{"rocpd_gpu_pc_sample"}),
+                insert_value("description",
+                             std::string{"PC sampling arch-specific fields (packed)"},
+                             allow_empty_string{}),
+                insert_value("byte_order", std::string{"little"}),
+                insert_value("alignment", int64_t{1}),
+                insert_value("struct_size", static_cast<int64_t>(sizeof(pc_sample_extdata_v1))),
+                insert_value("version", int64_t{1}),
+            });
 
         // Flush the schema row now so last_insert_rowid is valid.
         if(auto itr = db.pending_batches.find(schema_table); itr != db.pending_batches.end())
@@ -2175,41 +2176,29 @@ write_rocpd(
                              std::string_view dtype,
                              bool             is_signed,
                              std::string_view desc) {
-            get_insert_statement(db,
-                                 "rocpd_info_blob_field{{uuid}}",
-                                 {
-                                     insert_value("schema_id", schema_id),
-                                     insert_value("name", std::string{name}),
-                                     insert_value("offset", static_cast<int64_t>(offset)),
-                                     insert_value("size", static_cast<int64_t>(size)),
-                                     insert_value("data_type", std::string{dtype}),
-                                     insert_value("is_signed", is_signed ? int64_t{1} : int64_t{0}),
-                                     insert_value("description", std::string{desc}, allow_empty_string{}),
-                                 });
+            get_insert_statement(
+                db,
+                "rocpd_info_blob_field{{uuid}}",
+                {
+                    insert_value("schema_id", schema_id),
+                    insert_value("name", std::string{name}),
+                    insert_value("offset", static_cast<int64_t>(offset)),
+                    insert_value("size", static_cast<int64_t>(size)),
+                    insert_value("data_type", std::string{dtype}),
+                    insert_value("is_signed", is_signed ? int64_t{1} : int64_t{0}),
+                    insert_value("description", std::string{desc}, allow_empty_string{}),
+                });
         };
 
 #define ADD_FIELD_U32(FIELD, DESC)                                                                 \
-    add_field(#FIELD,                                                                              \
-              offsetof(pc_sample_extdata_v1, FIELD),                                               \
-              sizeof(uint32_t),                                                                     \
-              "uint32_t",                                                                           \
-              false,                                                                                \
-              DESC)
+    add_field(                                                                                     \
+        #FIELD, offsetof(pc_sample_extdata_v1, FIELD), sizeof(uint32_t), "uint32_t", false, DESC)
 #define ADD_FIELD_U8(FIELD, DESC)                                                                  \
-    add_field(#FIELD,                                                                              \
-              offsetof(pc_sample_extdata_v1, FIELD),                                               \
-              sizeof(uint8_t),                                                                      \
-              "uint8_t",                                                                            \
-              false,                                                                                \
-              DESC)
-#define ADD_FIELD_U64(FIELD, DESC)                                                    \
-    add_field(#FIELD,                                                                  \
-              offsetof(pc_sample_extdata_v1, FIELD),                                   \
-              sizeof(uint64_t),                                                        \
-              "uint64_t",                                                               \
-              false,                                                                    \
-              DESC)
-
+    add_field(                                                                                     \
+        #FIELD, offsetof(pc_sample_extdata_v1, FIELD), sizeof(uint8_t), "uint8_t", false, DESC)
+#define ADD_FIELD_U64(FIELD, DESC)                                                                 \
+    add_field(                                                                                     \
+        #FIELD, offsetof(pc_sample_extdata_v1, FIELD), sizeof(uint64_t), "uint64_t", false, DESC)
 
         ADD_FIELD_U32(hw_id_chiplet, "HW ID chiplet index");
         ADD_FIELD_U32(hw_id_wave_id, "HW ID wave slot index");
@@ -2307,24 +2296,25 @@ write_rocpd(
 
                 // Build the packed extdata blob from hw_id (always present) and
                 // arbiter-state snapshot (stochastic only).
-                auto extdata           = pc_sample_extdata_v1{};
-                extdata.hw_id_chiplet          = static_cast<uint32_t>(record.hw_id.chiplet);
-                extdata.hw_id_wave_id          = static_cast<uint32_t>(record.hw_id.wave_id);
-                extdata.hw_id_simd_id          = static_cast<uint32_t>(record.hw_id.simd_id);
-                extdata.hw_id_pipe_id          = static_cast<uint32_t>(record.hw_id.pipe_id);
-                extdata.hw_id_cu_or_wgp_id     = static_cast<uint32_t>(record.hw_id.cu_or_wgp_id);
-                extdata.hw_id_shader_array_id  = static_cast<uint32_t>(record.hw_id.shader_array_id);
-                extdata.hw_id_shader_engine_id = static_cast<uint32_t>(record.hw_id.shader_engine_id);
-                extdata.hw_id_workgroup_id     = static_cast<uint32_t>(record.hw_id.workgroup_id);
-                extdata.hw_id_vm_id            = static_cast<uint32_t>(record.hw_id.vm_id);
-                extdata.hw_id_queue_id         = static_cast<uint32_t>(record.hw_id.queue_id);
-                extdata.hw_id_microengine_id   = static_cast<uint32_t>(record.hw_id.microengine_id);
-                extdata.code_object_id         = static_cast<uint64_t>(record.pc.code_object_id);
-                extdata.code_object_offset     = static_cast<uint64_t>(record.pc.code_object_offset);
-                extdata.wave_in_group          = static_cast<uint32_t>(record.wave_in_group);
-                extdata.workgroup_id_x         = static_cast<uint32_t>(record.workgroup_id.x);
-                extdata.workgroup_id_y         = static_cast<uint32_t>(record.workgroup_id.y);
-                extdata.workgroup_id_z         = static_cast<uint32_t>(record.workgroup_id.z);
+                auto extdata                  = pc_sample_extdata_v1{};
+                extdata.hw_id_chiplet         = static_cast<uint32_t>(record.hw_id.chiplet);
+                extdata.hw_id_wave_id         = static_cast<uint32_t>(record.hw_id.wave_id);
+                extdata.hw_id_simd_id         = static_cast<uint32_t>(record.hw_id.simd_id);
+                extdata.hw_id_pipe_id         = static_cast<uint32_t>(record.hw_id.pipe_id);
+                extdata.hw_id_cu_or_wgp_id    = static_cast<uint32_t>(record.hw_id.cu_or_wgp_id);
+                extdata.hw_id_shader_array_id = static_cast<uint32_t>(record.hw_id.shader_array_id);
+                extdata.hw_id_shader_engine_id =
+                    static_cast<uint32_t>(record.hw_id.shader_engine_id);
+                extdata.hw_id_workgroup_id   = static_cast<uint32_t>(record.hw_id.workgroup_id);
+                extdata.hw_id_vm_id          = static_cast<uint32_t>(record.hw_id.vm_id);
+                extdata.hw_id_queue_id       = static_cast<uint32_t>(record.hw_id.queue_id);
+                extdata.hw_id_microengine_id = static_cast<uint32_t>(record.hw_id.microengine_id);
+                extdata.code_object_id       = static_cast<uint64_t>(record.pc.code_object_id);
+                extdata.code_object_offset   = static_cast<uint64_t>(record.pc.code_object_offset);
+                extdata.wave_in_group        = static_cast<uint32_t>(record.wave_in_group);
+                extdata.workgroup_id_x       = static_cast<uint32_t>(record.workgroup_id.x);
+                extdata.workgroup_id_y       = static_cast<uint32_t>(record.workgroup_id.y);
+                extdata.workgroup_id_z       = static_cast<uint32_t>(record.workgroup_id.z);
 
                 if constexpr(std::is_same_v<
                                  common::mpl::unqualified_type_t<decltype(pc_sampling_gen)>,

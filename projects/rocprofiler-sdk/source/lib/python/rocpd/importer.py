@@ -131,7 +131,6 @@ def execute_statement(conn, statement, is_script=False):
         raise err
 
 
-
 def _blob_struct_fmt(size: int, data_type: str, is_signed: int) -> str:
     """Return a struct.unpack_from format character for a single blob field.
 
@@ -146,7 +145,7 @@ def _blob_struct_fmt(size: int, data_type: str, is_signed: int) -> str:
     if dt in ("double", "f64", "fp64"):
         return "d"
     # Integer: pick format char by (size, signed)
-    signed_map   = {1: "b", 2: "h", 4: "i", 8: "q"}
+    signed_map = {1: "b", 2: "h", 4: "i", 8: "q"}
     unsigned_map = {1: "B", 2: "H", 4: "I", 8: "Q"}
     table = signed_map if is_signed else unsigned_map
     return table.get(size, "B")
@@ -290,9 +289,8 @@ def setup_blob_views(conn):
             conn.execute(view_sql)
         except sqlite3.OperationalError as exc:
             import sys
-            sys.stderr.write(
-                f"setup_blob_views: could not create {view_name}: {exc}\n"
-            )
+
+            sys.stderr.write(f"setup_blob_views: could not create {view_name}: {exc}\n")
 
 
 def _create_temp_views(connection, input):
