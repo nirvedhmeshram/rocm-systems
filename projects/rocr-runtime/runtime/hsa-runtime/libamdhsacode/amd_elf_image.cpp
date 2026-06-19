@@ -717,6 +717,11 @@ namespace elf {
 
       const char* data() override { assert(buffer); return buffer; }
       uint64_t size() override;
+      // Size in bytes of the raw backing buffer this image was initialized
+      // from, or 0 if the image is not buffer-backed. Unlike size(), this is
+      // not derived from attacker-controlled ELF header fields and is therefore
+      // safe to use for bounds checks.
+      size_t getBufferSize() const { return bufferSize; }
 
       bool push();
 
@@ -842,6 +847,18 @@ namespace elf {
 
     const char* GElfSegment::data() const
     {
+      // Bound the segment's file extent against the backing buffer. p_offset
+      // and p_filesz are attacker-controlled; without this check a crafted
+      // code object can make the loader memcpy heap memory adjacent to the
+      // image into a destination buffer (out-of-bounds read / cross-allocation
+      // disclosure). See ROCM-26177 finding #1 / SWSPLAT-24378.
+      const size_t buffer_size = elf->getBufferSize();
+      if (buffer_size != 0) {
+        if (phdr.p_offset > buffer_size ||
+            phdr.p_filesz > buffer_size - phdr.p_offset) {
+          return nullptr;
+        }
+      }
       return (const char*) elf->data() + phdr.p_offset;
     }
 
