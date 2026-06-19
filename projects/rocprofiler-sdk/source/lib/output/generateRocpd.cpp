@@ -2092,21 +2092,18 @@ write_rocpd(
     struct pc_sample_extdata_v1
     {
         // hw_id fields
-        uint32_t hw_id_chiplet          = 0;
-        uint32_t hw_id_wave_id          = 0;
-        uint32_t hw_id_simd_id          = 0;
-        uint32_t hw_id_pipe_id          = 0;
-        uint32_t hw_id_cu_or_wgp_id     = 0;
-        uint32_t hw_id_shader_array_id  = 0;
-        uint32_t hw_id_shader_engine_id = 0;
-        uint32_t hw_id_workgroup_id     = 0;
-        uint32_t hw_id_vm_id            = 0;
-        uint32_t hw_id_queue_id         = 0;
-        uint32_t hw_id_microengine_id   = 0;
-        // Generic PC sample fields retained for decode, not stored in base table.
-        uint64_t code_object_id     = 0;
-        uint64_t code_object_offset = 0;
-        uint32_t wave_in_group      = 0;
+        uint8_t hw_id_chiplet           = 0;
+        uint8_t hw_id_wave_id           = 0;
+        uint8_t hw_id_simd_id           = 0;
+        uint8_t hw_id_pipe_id           = 0;
+        uint8_t hw_id_cu_or_wgp_id      = 0;
+        uint8_t hw_id_shader_array_id   = 0;
+        uint8_t hw_id_shader_engine_id  = 0;
+        uint8_t hw_id_workgroup_id      = 0;
+        uint8_t hw_id_vm_id             = 0;
+        uint8_t hw_id_queue_id          = 0;
+        uint8_t hw_id_microengine_id    = 0;
+        uint8_t wave_in_group           = 0;
         uint32_t workgroup_id_x     = 0;
         uint32_t workgroup_id_y     = 0;
         uint32_t workgroup_id_z     = 0;
@@ -2196,24 +2193,18 @@ write_rocpd(
 #define ADD_FIELD_U8(FIELD, DESC)                                                                  \
     add_field(                                                                                     \
         #FIELD, offsetof(pc_sample_extdata_v1, FIELD), sizeof(uint8_t), "uint8_t", false, DESC)
-#define ADD_FIELD_U64(FIELD, DESC)                                                                 \
-    add_field(                                                                                     \
-        #FIELD, offsetof(pc_sample_extdata_v1, FIELD), sizeof(uint64_t), "uint64_t", false, DESC)
-
-        ADD_FIELD_U32(hw_id_chiplet, "HW ID chiplet index");
-        ADD_FIELD_U32(hw_id_wave_id, "HW ID wave slot index");
-        ADD_FIELD_U32(hw_id_simd_id, "HW ID SIMD index");
-        ADD_FIELD_U32(hw_id_pipe_id, "HW ID pipe index");
-        ADD_FIELD_U32(hw_id_cu_or_wgp_id, "HW ID CU (GFX9) or WGP (GFX10+) index");
-        ADD_FIELD_U32(hw_id_shader_array_id, "HW ID shader array index");
-        ADD_FIELD_U32(hw_id_shader_engine_id, "HW ID shader engine index");
-        ADD_FIELD_U32(hw_id_workgroup_id, "HW ID workgroup index");
-        ADD_FIELD_U32(hw_id_vm_id, "HW ID virtual memory ID");
-        ADD_FIELD_U32(hw_id_queue_id, "HW ID queue ID");
-        ADD_FIELD_U32(hw_id_microengine_id, "HW ID microengine (ACE) index");
-        ADD_FIELD_U64(code_object_id, "Code object id for instruction decode");
-        ADD_FIELD_U64(code_object_offset, "Code object offset for instruction decode");
-        ADD_FIELD_U32(wave_in_group, "Wave position within workgroup");
+        ADD_FIELD_U8(hw_id_chiplet, "HW ID chiplet index");
+        ADD_FIELD_U8(hw_id_wave_id, "HW ID wave slot index");
+        ADD_FIELD_U8(hw_id_simd_id, "HW ID SIMD index");
+        ADD_FIELD_U8(hw_id_pipe_id, "HW ID pipe index");
+        ADD_FIELD_U8(hw_id_cu_or_wgp_id, "HW ID CU (GFX9) or WGP (GFX10+) index");
+        ADD_FIELD_U8(hw_id_shader_array_id, "HW ID shader array index");
+        ADD_FIELD_U8(hw_id_shader_engine_id, "HW ID shader engine index");
+        ADD_FIELD_U8(hw_id_workgroup_id, "HW ID workgroup index");
+        ADD_FIELD_U8(hw_id_vm_id, "HW ID virtual memory ID");
+        ADD_FIELD_U8(hw_id_queue_id, "HW ID queue ID");
+        ADD_FIELD_U8(hw_id_microengine_id, "HW ID microengine (ACE) index");
+        ADD_FIELD_U8(wave_in_group, "Wave position within workgroup");
         ADD_FIELD_U32(workgroup_id_x, "Workgroup coordinate X");
         ADD_FIELD_U32(workgroup_id_y, "Workgroup coordinate Y");
         ADD_FIELD_U32(workgroup_id_z, "Workgroup coordinate Z");
@@ -2241,7 +2232,6 @@ write_rocpd(
 
 #undef ADD_FIELD_U32
 #undef ADD_FIELD_U8
-#undef ADD_FIELD_U64
 
         return schema_id;
     };
@@ -2297,21 +2287,19 @@ write_rocpd(
                 // Build the packed extdata blob from hw_id (always present) and
                 // arbiter-state snapshot (stochastic only).
                 auto extdata                  = pc_sample_extdata_v1{};
-                extdata.hw_id_chiplet         = static_cast<uint32_t>(record.hw_id.chiplet);
-                extdata.hw_id_wave_id         = static_cast<uint32_t>(record.hw_id.wave_id);
-                extdata.hw_id_simd_id         = static_cast<uint32_t>(record.hw_id.simd_id);
-                extdata.hw_id_pipe_id         = static_cast<uint32_t>(record.hw_id.pipe_id);
-                extdata.hw_id_cu_or_wgp_id    = static_cast<uint32_t>(record.hw_id.cu_or_wgp_id);
-                extdata.hw_id_shader_array_id = static_cast<uint32_t>(record.hw_id.shader_array_id);
+                extdata.hw_id_chiplet         = static_cast<uint8_t>(record.hw_id.chiplet);
+                extdata.hw_id_wave_id         = static_cast<uint8_t>(record.hw_id.wave_id);
+                extdata.hw_id_simd_id         = static_cast<uint8_t>(record.hw_id.simd_id);
+                extdata.hw_id_pipe_id         = static_cast<uint8_t>(record.hw_id.pipe_id);
+                extdata.hw_id_cu_or_wgp_id    = static_cast<uint8_t>(record.hw_id.cu_or_wgp_id);
+                extdata.hw_id_shader_array_id = static_cast<uint8_t>(record.hw_id.shader_array_id);
                 extdata.hw_id_shader_engine_id =
-                    static_cast<uint32_t>(record.hw_id.shader_engine_id);
-                extdata.hw_id_workgroup_id   = static_cast<uint32_t>(record.hw_id.workgroup_id);
-                extdata.hw_id_vm_id          = static_cast<uint32_t>(record.hw_id.vm_id);
-                extdata.hw_id_queue_id       = static_cast<uint32_t>(record.hw_id.queue_id);
-                extdata.hw_id_microengine_id = static_cast<uint32_t>(record.hw_id.microengine_id);
-                extdata.code_object_id       = static_cast<uint64_t>(record.pc.code_object_id);
-                extdata.code_object_offset   = static_cast<uint64_t>(record.pc.code_object_offset);
-                extdata.wave_in_group        = static_cast<uint32_t>(record.wave_in_group);
+                    static_cast<uint8_t>(record.hw_id.shader_engine_id);
+                extdata.hw_id_workgroup_id   = static_cast<uint8_t>(record.hw_id.workgroup_id);
+                extdata.hw_id_vm_id          = static_cast<uint8_t>(record.hw_id.vm_id);
+                extdata.hw_id_queue_id       = static_cast<uint8_t>(record.hw_id.queue_id);
+                extdata.hw_id_microengine_id = static_cast<uint8_t>(record.hw_id.microengine_id);
+                extdata.wave_in_group        = static_cast<uint8_t>(record.wave_in_group);
                 extdata.workgroup_id_x       = static_cast<uint32_t>(record.workgroup_id.x);
                 extdata.workgroup_id_y       = static_cast<uint32_t>(record.workgroup_id.y);
                 extdata.workgroup_id_z       = static_cast<uint32_t>(record.workgroup_id.z);
@@ -2387,7 +2375,9 @@ write_rocpd(
                         insert_value("dispatch_id", record.dispatch_id),
                         insert_value("correlation_id", record.correlation_id.external.value),
                         insert_value("exec_mask", static_cast<int64_t>(record.exec_mask)),
-                        insert_value("inst_index", itr.inst_index),
+                        insert_value("code_object_id", static_cast<uint64_t>(record.pc.code_object_id)),
+                        insert_value("code_object_offset",
+                                     static_cast<uint64_t>(record.pc.code_object_offset)),
                         insert_nullable_value("wave_issued", wave_issued),
                         insert_nullable_value("inst_type", inst_type),
                         insert_nullable_value("stall_reason", stall_reason),

@@ -46,9 +46,9 @@
 
 -- PC sampling indexes (active: table can hold millions of rows and is queried by
 -- dispatch_id for correlation, timestamp for timeline, and agent_id for per-GPU views).
-CREATE INDEX IF NOT EXISTS `rocpd_gpu_pc_sample{{uuid}}_dispatch_idx`
-    ON `rocpd_gpu_pc_sample{{uuid}}` ("dispatch_id");
-CREATE INDEX IF NOT EXISTS `rocpd_gpu_pc_sample{{uuid}}_timestamp_idx`
-    ON `rocpd_gpu_pc_sample{{uuid}}` ("timestamp");
-CREATE INDEX IF NOT EXISTS `rocpd_gpu_pc_sample{{uuid}}_agent_idx`
-    ON `rocpd_gpu_pc_sample{{uuid}}` ("agent_id");
+-- CREATE INDEX IF NOT EXISTS `rocpd_gpu_pc_sample{{uuid}}_dispatch_idx`
+--     ON `rocpd_gpu_pc_sample{{uuid}}` ("dispatch_id");
+-- CREATE INDEX IF NOT EXISTS `rocpd_gpu_pc_sample{{uuid}}_timestamp_idx`
+--     ON `rocpd_gpu_pc_sample{{uuid}}` ("timestamp");
+-- CREATE INDEX IF NOT EXISTS `rocpd_gpu_pc_sample{{uuid}}_agent_idx`
+--     ON `rocpd_gpu_pc_sample{{uuid}}` ("agent_id");
