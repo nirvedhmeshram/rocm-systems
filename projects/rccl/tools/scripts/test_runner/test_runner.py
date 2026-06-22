@@ -42,6 +42,18 @@ def main():
         sys.exit(1)
 
     try:
+        # Pull latest changes from upstream before doing anything else.
+        import subprocess as _sp
+        _repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        print(f"Pulling latest changes (git pull --rebase) in {_repo} ...")
+        _pull = _sp.run(['git', 'pull', '--rebase'], cwd=_repo, capture_output=True, text=True)
+        if _pull.returncode == 0:
+            print(_pull.stdout.strip() or 'Already up to date.')
+        else:
+            print(f"WARNING: git pull --rebase failed (exit {_pull.returncode}), continuing anyway:")
+            print(_pull.stderr.strip())
+        print()
+
         # Load and validate configuration
         if args.verbose:
             print("Loading configuration...")

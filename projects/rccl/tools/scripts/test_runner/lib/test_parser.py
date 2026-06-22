@@ -186,6 +186,8 @@ Examples:
             _extra_mpi = ' '.join(p for p in (_cli_mpi, _env_mpi) if p)
             print(f"Extra MPI args:    {_extra_mpi if _extra_mpi else 'none'}")
             print(f"MPI implementation: {'mpich' if args.mpich else 'openmpi (default)'}")
+            _db_url = getattr(args, 'db_url', '') or os.environ.get('RCCL_TEST_DB_URL', '')
+            print(f"DB reporting:      {'enabled → ' + _db_url if _db_url else 'disabled (no --db-url)'}")
             print("="*80)
             print()
 
