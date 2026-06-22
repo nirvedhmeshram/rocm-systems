@@ -650,29 +650,37 @@ class TestExecutor:
                 info['rocm_version'] = m.group(1)
 
         # --- RCCL version ------------------------------------------------
+        # Primary: makefiles/version.mk (NCCL_MAJOR/MINOR/PATCH)
         workdir = self.paths.get('workdir', os.getcwd())
-        cmake = os.path.join(workdir, 'projects', 'rccl', 'CMakeLists.txt')
-        if not os.path.isfile(cmake):
-            cmake = os.path.join(workdir, 'CMakeLists.txt')
-        if os.path.isfile(cmake):
+        version_mk = os.path.join(workdir, 'makefiles', 'version.mk')
+        if not os.path.isfile(version_mk):
+            # workdir might be the monorepo root — try the rccl subdir
+            version_mk = os.path.join(workdir, 'projects', 'rccl', 'makefiles', 'version.mk')
+        if os.path.isfile(version_mk):
             try:
-                txt = open(cmake).read()
-                m = re.search(r'project\s*\(\s*rccl\s+VERSION\s+([\d.]+)', txt, re.IGNORECASE)
-                if m:
-                    info['rccl_version'] = m.group(1)
+                txt = open(version_mk).read()
+                major = re.search(r'NCCL_MAJOR\s*:=\s*(\d+)', txt)
+                minor = re.search(r'NCCL_MINOR\s*:=\s*(\d+)', txt)
+                patch = re.search(r'NCCL_PATCH\s*:=\s*(\d+)', txt)
+                if major and minor and patch:
+                    info['rccl_version'] = f"{major.group(1)}.{minor.group(1)}.{patch.group(1)}"
             except OSError:
                 pass
-        # Fallback: git describe on workdir
+        # Fallback: project(rccl VERSION x.y.z) in CMakeLists.txt
         if 'rccl_version' not in info:
-            try:
-                r = subprocess.run(
-                    ['git', 'describe', '--tags', '--abbrev=8', '--always'],
-                    capture_output=True, text=True, cwd=workdir, timeout=5
-                )
-                if r.returncode == 0:
-                    info['rccl_version'] = r.stdout.strip()
-            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-                pass
+            for cmake in [
+                os.path.join(workdir, 'CMakeLists.txt'),
+                os.path.join(workdir, 'projects', 'rccl', 'CMakeLists.txt'),
+            ]:
+                if os.path.isfile(cmake):
+                    try:
+                        txt = open(cmake).read()
+                        m = re.search(r'project\s*\(\s*rccl\s+VERSION\s+([\d.]+)', txt, re.IGNORECASE)
+                        if m:
+                            info['rccl_version'] = m.group(1)
+                            break
+                    except OSError:
+                        pass
 
         # --- GPU count ---------------------------------------------------
         info['num_gpus'] = self.gpus_per_node or 0
