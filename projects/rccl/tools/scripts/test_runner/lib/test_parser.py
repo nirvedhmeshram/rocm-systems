@@ -146,7 +146,7 @@ Examples:
             '--db-url',
             type=str,
             default=os.environ.get('RCCL_TEST_DB_URL', ''),
-            help="Dashboard base URL for DB reporting, e.g. http://gohanmilanbeast:8080 "
+            help="Dashboard base URL for DB reporting, e.g. http://my-machine:8080 "
                  "(also accepts RCCL_TEST_DB_URL env var)"
         )
 

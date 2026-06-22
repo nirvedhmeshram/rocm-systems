@@ -9,7 +9,7 @@ Uses stdlib urllib only (no third-party deps) so it runs on any cluster node
 without extra pip installs.
 
 Configure via --db-url CLI flag or the RCCL_TEST_DB_URL environment variable,
-e.g.  --db-url http://gohanmilanbeast:8080
+e.g.  --db-url http://my-machine:8080
 
 All public methods on NullDBReporter are no-ops so callers never need to branch
 on whether DB reporting is enabled.
