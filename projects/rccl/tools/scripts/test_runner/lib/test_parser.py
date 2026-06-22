@@ -142,6 +142,13 @@ Examples:
             default=False,
             help="Use MPICH syntax (-env) instead of OpenMPI (-x) for passing env vars to mpirun"
         )
+        self.parser.add_argument(
+            '--db-url',
+            type=str,
+            default=os.environ.get('RCCL_TEST_DB_URL', ''),
+            help="Dashboard base URL for DB reporting, e.g. http://gohanmilanbeast:8080 "
+                 "(also accepts RCCL_TEST_DB_URL env var)"
+        )
 
     def parse_arguments(self):
         """Parse command-line arguments"""
@@ -230,4 +237,83 @@ def parse_test_output(output):
     results['errors'] = errors[:10]  # Limit to first 10 errors
 
     return results
+
+
+def parse_rccl_tests_perf_output(stdout: str, binary_name: str) -> list:
+    """
+    Parse rccl-tests *_perf binary stdout into a list of row dicts.
+
+    rccl-tests emits a columnar table.  Two formats exist:
+
+    Reduce-style (all_reduce_perf, reduce_perf, reduce_scatter_perf) — 13 data cols:
+        size  count  type  redop  root  oop_time  oop_algbw  oop_busbw  oop_wrong
+                                        ip_time   ip_algbw   ip_busbw   ip_wrong
+
+    Gather-style (all_gather_perf, broadcast_perf, alltoall_perf, sendrecv_perf,
+                  scatter_perf, gather_perf) — 11 data cols:
+        size  count  type  oop_time  oop_algbw  oop_busbw  oop_wrong
+                           ip_time   ip_algbw   ip_busbw   ip_wrong
+
+    Returns two dicts per data row (one out-of-place, one in-place).
+    Fields per dict: collective, datatype, msg_size_bytes, in_place,
+                     algo_bw_gbps, bus_bw_gbps, avg_lat_us, wrong_results.
+    """
+    collective = re.sub(r'_perf$', '', os.path.basename(binary_name))
+    rows = []
+
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        parts = line.split()
+        if len(parts) < 11:
+            continue
+        # First token must be an integer (message size in bytes).
+        try:
+            msg_size = int(parts[0])
+        except ValueError:
+            continue
+        try:
+            if len(parts) >= 13:
+                # Reduce-style: size count dtype redop root
+                #               oop_t oop_alg oop_bw oop_wrong
+                #               ip_t  ip_alg  ip_bw  ip_wrong
+                dtype     = parts[2]
+                oop_time  = float(parts[5])
+                oop_algbw = float(parts[6])
+                oop_busbw = float(parts[7])
+                oop_wrong = int(float(parts[8]))
+                ip_time   = float(parts[9])
+                ip_algbw  = float(parts[10])
+                ip_busbw  = float(parts[11])
+                ip_wrong  = int(float(parts[12]))
+            else:
+                # Gather-style: size count dtype
+                #               oop_t oop_alg oop_bw oop_wrong
+                #               ip_t  ip_alg  ip_bw  ip_wrong
+                dtype     = parts[2]
+                oop_time  = float(parts[3])
+                oop_algbw = float(parts[4])
+                oop_busbw = float(parts[5])
+                oop_wrong = int(float(parts[6]))
+                ip_time   = float(parts[7])
+                ip_algbw  = float(parts[8])
+                ip_busbw  = float(parts[9])
+                ip_wrong  = int(float(parts[10]))
+        except (ValueError, IndexError):
+            continue
+
+        base = {
+            'collective':     collective,
+            'datatype':       dtype,
+            'msg_size_bytes': msg_size,
+        }
+        rows.append({**base, 'in_place': False,
+                     'algo_bw_gbps': oop_algbw, 'bus_bw_gbps': oop_busbw,
+                     'avg_lat_us': oop_time, 'wrong_results': oop_wrong})
+        rows.append({**base, 'in_place': True,
+                     'algo_bw_gbps': ip_algbw, 'bus_bw_gbps': ip_busbw,
+                     'avg_lat_us': ip_time, 'wrong_results': ip_wrong})
+
+    return rows
 

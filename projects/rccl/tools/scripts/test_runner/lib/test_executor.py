@@ -28,8 +28,12 @@ from pathlib import Path
 # processor so binary/path resolution honors the same syntax used elsewhere.
 try:
     from lib.test_config import expand_env_vars
+    from lib.test_parser import parse_rccl_tests_perf_output
+    from lib.db_reporter import NullDBReporter
 except ImportError:
     from test_config import expand_env_vars
+    from test_parser import parse_rccl_tests_perf_output
+    from db_reporter import NullDBReporter
 
 # Make stdout unbuffered to prevent output ordering issues with subprocesses
 sys.stdout.reconfigure(line_buffering=True)
@@ -246,14 +250,17 @@ class TestExecutor:
         },
     }
 
-    def __init__(self, config_processor, args):
+    def __init__(self, config_processor, args, db_reporter=None):
         """
         Initialize TestExecutor
 
         Args:
             config_processor: TestConfigProcessor instance
             args: Parsed command-line arguments
+            db_reporter: DBReporter (or NullDBReporter) instance for DB push.
+                         Defaults to NullDBReporter (no-op) when absent.
         """
+        self.db_reporter = db_reporter if db_reporter is not None else NullDBReporter()
         self.config_processor = config_processor
         self.args = args
         self.system_config = config_processor.get_system_config()
@@ -1338,8 +1345,9 @@ class TestExecutor:
             print(f"  LD_LIBRARY_PATH: {env.get('LD_LIBRARY_PATH', '')}")
             print(f"  LLVM_PROFILE_FILE: {env.get('LLVM_PROFILE_FILE', 'Not set')}\n")
 
-        # Inherit stdout/stderr (no PIPE capture). For gtest, --gtest_output=json:…
-        # (temp file, removed in finally) supplies reliable SKIPPED vs PASSED on exit 0.
+        # For non-gtest (perf) tests we tee stdout: stream to the terminal AND
+        # capture it so we can parse perf rows for DB reporting.  gtest tests
+        # inherit stdout unchanged (--gtest_output=json:… provides the results).
         #
         # Launch the test in its own session (start_new_session=True) so the
         # shell AND every descendant -- mpirun, orted, and the spawned ranks /
@@ -1347,6 +1355,11 @@ class TestExecutor:
         # subprocess.run(timeout=...) only SIGKILLs the immediate /bin/sh child,
         # leaving mpirun and all of its ranks running (and holding the GPUs),
         # which is exactly the orphaned-process behaviour seen on timeout.
+        capture_stdout = not is_gtest  # tee stdout only for perf / non-gtest tests
+        captured_lines: list = []
+
+        import threading
+
         start_time = time.time()
         proc = subprocess.Popen(
             cmd,
@@ -1354,7 +1367,20 @@ class TestExecutor:
             cwd=os.path.join(self.build_dir, "test"),
             env=env,
             start_new_session=True,
+            stdout=subprocess.PIPE if capture_stdout else None,
+            stderr=None,  # always inherit stderr
         )
+
+        # Tee thread: forward each line to stdout AND accumulate for parsing.
+        tee_thread = None
+        if capture_stdout and proc.stdout:
+            def _tee(pipe, lines):
+                for raw in pipe:
+                    line = raw.decode(errors="replace").rstrip("\n")
+                    print(line, flush=True)
+                    lines.append(line)
+            tee_thread = threading.Thread(target=_tee, args=(proc.stdout, captured_lines), daemon=True)
+            tee_thread.start()
         try:
             try:
                 returncode = proc.wait(timeout=timeout if timeout > 0 else None)
@@ -1387,6 +1413,10 @@ class TestExecutor:
 
             duration = time.time() - start_time
 
+            # Join the tee thread so all output is flushed before we parse it.
+            if tee_thread is not None:
+                tee_thread.join(timeout=5)
+
             if is_gtest:
                 rc = returncode if returncode is not None else -1
                 test_result = infer_gtest_result_from_json_file(gtest_json_path or "", rc)
@@ -1398,6 +1428,13 @@ class TestExecutor:
                 else:
                     test_result = TestResult.RESULT_FAILED.value
 
+            # Parse perf rows from captured stdout (non-gtest / *_perf binaries only).
+            perf_rows: list = []
+            if capture_stdout and captured_lines:
+                perf_rows = parse_rccl_tests_perf_output(
+                    "\n".join(captured_lines), binary
+                )
+
             print(f"\n  Result: {test_result} ({duration:.3f} seconds)")
 
             return {
@@ -1405,6 +1442,10 @@ class TestExecutor:
                 "result": test_result,
                 "duration": duration,
                 "exit_code": int(returncode) if returncode is not None else -1,
+                "perf_rows": perf_rows,
+                "binary": str(binary),
+                "env_vars": dict(merged_env),
+                "num_ranks": num_ranks,
             }
         finally:
             if gtest_json_path:
@@ -1649,6 +1690,23 @@ class TestExecutor:
             self.test_results.append(result["result"])
             self.test_durations.append(result["duration"])
             self.test_suites.append(suite_name)
+
+            # Push to DB (no-op when db_reporter is NullDBReporter).
+            # Pull binary / env_vars / num_ranks from the test config when the
+            # result dict doesn't carry them (e.g. gtest tests, early returns).
+            self.db_reporter.record_test(
+                suite_name=suite_name,
+                test_name=test_name,
+                binary_path=result.get("binary") or str(test.get("binary", "")),
+                env_vars=result.get("env_vars") or {
+                    **suite_config.get("env_variables", {}),
+                    **test.get("env_variables", {}),
+                },
+                mpi_np=result.get("num_ranks") or int(test.get("num_ranks", 1) if str(test.get("num_ranks", 1)).lower() != "auto" else 1),
+                result=result["result"],
+                duration_s=result["duration"],
+                perf_rows=result.get("perf_rows", []),
+            )
 
             # If test failed and rerun flag is set, rerun immediately
             if self.args.rerun_failed and result["result"] in [TestResult.RESULT_FAILED.value, TestResult.RESULT_TIMEOUT.value]:

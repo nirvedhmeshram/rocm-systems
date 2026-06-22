@@ -12,6 +12,7 @@ import logging
 from lib.test_parser import ArgumentParserInterface
 from lib.test_config import TestConfigProcessor
 from lib.test_executor import TestExecutor, glob_filter_matches
+from lib.db_reporter import DBReporter, NullDBReporter
 
 # Configure logging
 logging.basicConfig(
@@ -50,6 +51,18 @@ def main():
 
         # Create test executor
         executor = TestExecutor(config_processor, args)
+
+        # Create DB reporter — no-op when --db-url is absent.
+        db_url = getattr(args, 'db_url', '') or ''
+        if db_url:
+            db_reporter = DBReporter(
+                base_url=db_url,
+                config_file=args.config,
+            )
+        else:
+            db_reporter = NullDBReporter()
+
+        executor.db_reporter = db_reporter
 
         # Check environment
         if not executor.check_environment():
@@ -99,6 +112,9 @@ def main():
                 elif args.suite_name and not glob_filter_matches(suite_name, args.suite_name):
                     print(f"SKIP: Test suite '{suite_name}' (does not match --suite-name '{args.suite_name}')")
 
+            # Start DB run record before executing any suites.
+            db_reporter.start_run()
+
             # Run only enabled (and name-matched) test suites
             # Note: Reruns happen immediately within run_test_suite() if --rerun-failed is set
             for suite in test_suites:
@@ -110,8 +126,18 @@ def main():
                     continue
                 executor.run_test_suite(suite)
 
-            # Print summary once at the end
+            # Print summary once at the end — unchanged from original behaviour.
             executor.print_summary()
+
+            # Finalize DB run record.
+            from lib.test_executor import TestResult as _TR
+            db_reporter.finish_run(
+                total=len(executor.test_results),
+                passed=executor.test_results.count(_TR.RESULT_PASSED.value),
+                failed=executor.test_results.count(_TR.RESULT_FAILED.value),
+                timed_out=executor.test_results.count(_TR.RESULT_TIMEOUT.value),
+                skipped=executor.test_results.count(_TR.RESULT_SKIPPED.value),
+            )
 
         # Generate coverage report
         if not args.coverage_report:
