@@ -543,6 +543,109 @@ class TestExecutor:
             print("Environment validation passed")
         return True
 
+    def collect_system_info(self) -> dict:
+        """
+        Collect runtime system metadata for DB reporting.
+
+        Returns a dict with keys matching the DBReporter fields:
+            gpu_arch, rocm_version, rccl_version, num_gpus, num_nodes,
+            hostnames, mpi_args.
+        """
+        info: dict = {}
+
+        rocm_path = self._rocm_root()
+
+        # --- GPU arch (gfx942 / gfx950 / …) via rocminfo ----------------
+        rocminfo = os.path.join(rocm_path, 'bin', 'rocminfo')
+        if not os.path.isfile(rocminfo):
+            rocminfo = shutil.which('rocminfo') or ''
+        if rocminfo:
+            try:
+                r = subprocess.run([rocminfo], capture_output=True, text=True, timeout=15)
+                if r.returncode == 0:
+                    arches = []
+                    for line in r.stdout.splitlines():
+                        m = re.search(r'\bName:\s*(gfx\w+)', line)
+                        if m and m.group(1) not in arches:
+                            arches.append(m.group(1))
+                    if arches:
+                        info['gpu_arch'] = ','.join(arches)
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                pass
+
+        # --- ROCm version ------------------------------------------------
+        for path in [
+            os.path.join(rocm_path, '.info', 'version'),
+            os.path.join(rocm_path, 'lib', 'rocm_version'),
+            '/etc/rocm-release',
+        ]:
+            if os.path.isfile(path):
+                try:
+                    info['rocm_version'] = open(path).read().strip().split('\n')[0]
+                    break
+                except OSError:
+                    pass
+        if 'rocm_version' not in info:
+            # Fallback: extract from the ROCm directory name (e.g. /opt/rocm-6.2.0)
+            m = re.search(r'rocm[-_](\d[\d.]+)', rocm_path)
+            if m:
+                info['rocm_version'] = m.group(1)
+
+        # --- RCCL version ------------------------------------------------
+        workdir = self.paths.get('workdir', os.getcwd())
+        cmake = os.path.join(workdir, 'projects', 'rccl', 'CMakeLists.txt')
+        if not os.path.isfile(cmake):
+            cmake = os.path.join(workdir, 'CMakeLists.txt')
+        if os.path.isfile(cmake):
+            try:
+                txt = open(cmake).read()
+                m = re.search(r'project\s*\(\s*rccl\s+VERSION\s+([\d.]+)', txt, re.IGNORECASE)
+                if m:
+                    info['rccl_version'] = m.group(1)
+            except OSError:
+                pass
+        # Fallback: git describe on workdir
+        if 'rccl_version' not in info:
+            try:
+                r = subprocess.run(
+                    ['git', 'describe', '--tags', '--abbrev=8', '--always'],
+                    capture_output=True, text=True, cwd=workdir, timeout=5
+                )
+                if r.returncode == 0:
+                    info['rccl_version'] = r.stdout.strip()
+            except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+                pass
+
+        # --- GPU count ---------------------------------------------------
+        info['num_gpus'] = self.gpus_per_node or 0
+
+        # --- Nodes + hostnames from the MPI host list --------------------
+        mpi_hosts = self.mpi_hosts
+        hostnames: list = []
+        if 'host_list' in mpi_hosts:
+            hostnames = [h.split(':')[0] for h in mpi_hosts['host_list'].split(',') if h.strip()]
+        elif 'hostfile' in mpi_hosts:
+            try:
+                lines = open(mpi_hosts['hostfile']).read().splitlines()
+                hostnames = [l.split()[0] for l in lines if l.strip() and not l.startswith('#')]
+            except OSError:
+                pass
+        if not hostnames:
+            import socket as _socket
+            hostnames = [_socket.gethostname()]
+        info['num_nodes'] = len(hostnames)
+        info['hostnames'] = hostnames
+
+        # --- MPI args (base from config + CLI extra) ---------------------
+        base_mpi = self.config_processor.config.get('mpi_args', '')
+        if isinstance(base_mpi, list):
+            base_mpi = ' '.join(base_mpi)
+        cli_mpi = getattr(self.args, 'mpi_args', '') or ''
+        env_mpi = os.environ.get('RCCL_TEST_MPI_ARGS', '')
+        info['mpi_args'] = ' '.join(p for p in (str(base_mpi), cli_mpi, env_mpi) if p).strip()
+
+        return info
+
     def _check_coverage_instrumentation(self, lib_path):
         """
         Verify librccl.so was built with LLVM source-based code coverage

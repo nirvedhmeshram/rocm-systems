@@ -63,15 +63,23 @@ class DBReporter:
         base_url: str,
         config_file: str = "",
         gpu_arch: str = "",
+        rocm_version: str = "",
         rccl_version: str = "",
         mpi_args: str = "",
+        num_gpus: int = 0,
+        num_nodes: int = 0,
+        hostnames: Optional[list] = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.config_file = config_file
         self.host = socket.gethostname()
         self.gpu_arch = gpu_arch
+        self.rocm_version = rocm_version
         self.rccl_version = rccl_version
         self.mpi_args = mpi_args
+        self.num_gpus = num_gpus
+        self.num_nodes = num_nodes
+        self.hostnames = hostnames or []
         self._run_id: Optional[str] = None
 
     @property
@@ -120,8 +128,12 @@ class DBReporter:
             "config_file":  self.config_file,
             "host":         self.host,
             "gpu_arch":     self.gpu_arch,
+            "rocm_version": self.rocm_version,
             "rccl_version": self.rccl_version,
             "mpi_args":     self.mpi_args,
+            "num_gpus":     self.num_gpus,
+            "num_nodes":    self.num_nodes,
+            "hostnames":    self.hostnames,
         })
         if resp and resp.get("run_id"):
             self._run_id = resp["run_id"]

@@ -55,10 +55,25 @@ def main():
         # Create DB reporter — no-op when --db-url is absent.
         db_url = getattr(args, 'db_url', '') or ''
         if db_url:
+            sysinfo = executor.collect_system_info()
             db_reporter = DBReporter(
                 base_url=db_url,
                 config_file=args.config,
+                gpu_arch=sysinfo.get('gpu_arch', ''),
+                rocm_version=sysinfo.get('rocm_version', ''),
+                rccl_version=sysinfo.get('rccl_version', ''),
+                mpi_args=sysinfo.get('mpi_args', ''),
+                num_gpus=sysinfo.get('num_gpus', 0),
+                num_nodes=sysinfo.get('num_nodes', 0),
+                hostnames=sysinfo.get('hostnames', []),
             )
+            if args.verbose:
+                print(f"[db] system info: gpu_arch={sysinfo.get('gpu_arch')} "
+                      f"rocm={sysinfo.get('rocm_version')} "
+                      f"rccl={sysinfo.get('rccl_version')} "
+                      f"gpus={sysinfo.get('num_gpus')} "
+                      f"nodes={sysinfo.get('num_nodes')} "
+                      f"hosts={sysinfo.get('hostnames')}")
         else:
             db_reporter = NullDBReporter()
 
