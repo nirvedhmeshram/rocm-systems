@@ -130,6 +130,64 @@ def _gtest_json_accumulate(obj, stats):
             _gtest_json_accumulate(item, stats)
 
 
+def extract_gtest_cases(json_path: str) -> list:
+    """
+    Parse a --gtest_output=json file and return a flat list of individual
+    test case dicts, one per leaf test:
+
+        {
+            'suite':    str,   # GTest suite name  (e.g. "CE_AllGather")
+            'name':     str,   # GTest test name   (e.g. "AllGather_2Ranks")
+            'result':   str,   # "PASSED" | "FAILED" | "SKIPPED"
+            'duration': float, # seconds (parsed from the "time" field)
+            'failure':  str,   # first failure message, or ""
+        }
+
+    Returns an empty list when the file is missing, unreadable, or has no cases.
+    """
+    if not json_path or not os.path.isfile(json_path):
+        return []
+    try:
+        with open(json_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return []
+
+    cases = []
+    for suite in data.get("testsuites", []):
+        suite_name = suite.get("name", "")
+        for tc in suite.get("testsuite", []):
+            name    = tc.get("name", "")
+            result  = tc.get("result", "")
+            failures = tc.get("failures") or []
+
+            if failures:
+                status = TestResult.RESULT_FAILED.value
+                failure_msg = failures[0].get("failure", "") if isinstance(failures[0], dict) else str(failures[0])
+            elif result == "SKIPPED":
+                status = TestResult.RESULT_SKIPPED.value
+                failure_msg = ""
+            else:
+                status = TestResult.RESULT_PASSED.value
+                failure_msg = ""
+
+            # "time" is a string like "0.123s"; strip the trailing 's'.
+            raw_time = tc.get("time", "0s")
+            try:
+                duration = float(str(raw_time).rstrip("s"))
+            except ValueError:
+                duration = 0.0
+
+            cases.append({
+                "suite":    suite_name,
+                "name":     name,
+                "result":   status,
+                "duration": duration,
+                "failure":  failure_msg,
+            })
+    return cases
+
+
 def infer_gtest_result_from_json_file(json_path: str, returncode: int) -> str:
     """
     Map gtest exit code + JSON report to TestResult.
@@ -1538,6 +1596,11 @@ class TestExecutor:
                     "\n".join(captured_lines), binary
                 )
 
+            # Extract individual gtest cases from the JSON report.
+            gtest_cases: list = []
+            if is_gtest and gtest_json_path:
+                gtest_cases = extract_gtest_cases(gtest_json_path)
+
             print(f"\n  Result: {test_result} ({duration:.3f} seconds)")
 
             return {
@@ -1546,6 +1609,7 @@ class TestExecutor:
                 "duration": duration,
                 "exit_code": int(returncode) if returncode is not None else -1,
                 "perf_rows": perf_rows,
+                "gtest_cases": gtest_cases,
                 "binary": str(binary),
                 "env_vars": dict(merged_env),
                 "num_ranks": num_ranks,
@@ -1797,19 +1861,45 @@ class TestExecutor:
             # Push to DB (no-op when db_reporter is NullDBReporter).
             # Pull binary / env_vars / num_ranks from the test config when the
             # result dict doesn't carry them (e.g. gtest tests, early returns).
-            self.db_reporter.record_test(
-                suite_name=suite_name,
-                test_name=test_name,
-                binary_path=result.get("binary") or str(test.get("binary", "")),
-                env_vars=result.get("env_vars") or {
-                    **suite_config.get("env_variables", {}),
-                    **test.get("env_variables", {}),
-                },
-                mpi_np=result.get("num_ranks") or int(test.get("num_ranks", 1) if str(test.get("num_ranks", 1)).lower() != "auto" else 1),
-                result=result["result"],
-                duration_s=result["duration"],
-                perf_rows=result.get("perf_rows", []),
+            binary_path = result.get("binary") or str(test.get("binary", ""))
+            env_vars    = result.get("env_vars") or {
+                **suite_config.get("env_variables", {}),
+                **test.get("env_variables", {}),
+            }
+            raw_ranks = test.get("num_ranks", 1)
+            mpi_np = result.get("num_ranks") or (
+                1 if str(raw_ranks).lower() == "auto" else int(raw_ranks)
             )
+
+            gtest_cases = result.get("gtest_cases", [])
+            if gtest_cases:
+                # One DB row per individual gtest test case — gives granular
+                # pass/fail visibility for unit tests.
+                for gc in gtest_cases:
+                    self.db_reporter.record_test(
+                        suite_name=gc["suite"] or suite_name,
+                        test_name=gc["name"],
+                        binary_path=binary_path,
+                        env_vars=env_vars,
+                        mpi_np=mpi_np,
+                        result=gc["result"],
+                        duration_s=gc["duration"],
+                        perf_rows=[],
+                        failure_msg=gc.get("failure", ""),
+                    )
+            else:
+                # Non-gtest (perf) tests or early-return results — one row per
+                # binary invocation, carrying perf_rows when present.
+                self.db_reporter.record_test(
+                    suite_name=suite_name,
+                    test_name=test_name,
+                    binary_path=binary_path,
+                    env_vars=env_vars,
+                    mpi_np=mpi_np,
+                    result=result["result"],
+                    duration_s=result["duration"],
+                    perf_rows=result.get("perf_rows", []),
+                )
 
             # If test failed and rerun flag is set, rerun immediately
             if self.args.rerun_failed and result["result"] in [TestResult.RESULT_FAILED.value, TestResult.RESULT_TIMEOUT.value]:

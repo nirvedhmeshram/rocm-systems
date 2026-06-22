@@ -151,6 +151,7 @@ class DBReporter:
         result: str,
         duration_s: float,
         perf_rows: list,
+        failure_msg: str = "",
     ) -> None:
         """
         Persist one test_cases row (+ any perf_results rows) in the dashboard DB.
@@ -167,6 +168,7 @@ class DBReporter:
             "result":      result,
             "duration_s":  duration_s,
             "perf_rows":   perf_rows,
+            "failure_msg": failure_msg,
         })
 
     def finish_run(
