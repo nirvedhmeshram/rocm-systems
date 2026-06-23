@@ -97,6 +97,45 @@ list(REMOVE_ITEM RAS_DECODE_SOURCES "main.c")
 set(SRC_LIST ${SRC_LIST} ${RAS_DECODE_SOURCES})
 set(INC_LIST ${INC_LIST} ${RAS_DECODE_INCLUDES})
 
+# ADDC CPER decode backend (optional). Built only when ENABLE_ADDC is ON. ADDC
+# needs a C++20/<format>-capable toolchain (GCC 13+), so it is compiled as an
+# isolated static library and consumed solely through its C API (addc/lib_c.h);
+# libamd_smi.so itself stays C++17. The source is cloned at configure time,
+# mirroring the ras-decode acquisition pattern.
+if(ENABLE_ADDC)
+    set(ADDC_REPO "git@github-emu:AMD-DCTOOLS/addc-base.git")
+    set(ADDC_TAG "v3.2.0")
+    set(ADDC_DIR "${CMAKE_CURRENT_BINARY_DIR}/addc-base")
+    if(NOT EXISTS "${ADDC_DIR}/meson.build")
+        if(NOT GIT_FOUND)
+            message(FATAL_ERROR "ENABLE_ADDC requires Git to clone ${ADDC_REPO}")
+        endif()
+        message(STATUS "Cloning ${ADDC_REPO} (${ADDC_TAG}) for ENABLE_ADDC")
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} clone --depth 1 --branch ${ADDC_TAG} ${ADDC_REPO} ${ADDC_DIR}
+            RESULT_VARIABLE ADDC_CLONE_RESULT
+        )
+        if(NOT ADDC_CLONE_RESULT EQUAL 0)
+            message(FATAL_ERROR "Failed to clone ${ADDC_REPO} (rc=${ADDC_CLONE_RESULT})")
+        endif()
+    endif()
+
+    # Every library translation unit lives under src/; only the addc-tool CLI is
+    # excluded.
+    file(GLOB_RECURSE ADDC_SOURCES CONFIGURE_DEPENDS "${ADDC_DIR}/src/*.cpp")
+    list(FILTER ADDC_SOURCES EXCLUDE REGEX "/addc-tool/")
+
+    add_library(addc_lib STATIC ${ADDC_SOURCES})
+    set_target_properties(
+        addc_lib
+        PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON
+    )
+    target_include_directories(addc_lib PUBLIC "${ADDC_DIR}/include" PRIVATE "${INC_DIR}/impl/third_party")
+    target_compile_definitions(addc_lib PRIVATE ADDC_BUILDING_LIB ADDC_VERSION="${ADDC_TAG}")
+    # ADDC owns its own warning policy; do not impose amd-smi's -Werror/-Wconversion on it.
+    target_compile_options(addc_lib PRIVATE -w)
+endif()
+
 # Include UALOE library - always required
 set(UALOE_LIB "ualoe_lib")
 set(UALOE_LIB_SRC_DIR "${PROJECT_SOURCE_DIR}/src/${UALOE_LIB}")
@@ -143,6 +182,8 @@ foreach(_TARGET IN LISTS _AMD_SMI_ALL_TARGETS)
 
     if(ENABLE_ADDC)
         target_compile_definitions(${_TARGET} PRIVATE AMDSMI_ENABLE_ADDC)
+        # PUBLIC include on addc_lib propagates addc/lib_c.h to this target.
+        target_link_libraries(${_TARGET} PRIVATE addc_lib)
     endif()
 
     target_include_directories(
