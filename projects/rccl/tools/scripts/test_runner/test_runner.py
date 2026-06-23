@@ -12,7 +12,7 @@ import logging
 from lib.test_parser import ArgumentParserInterface
 from lib.test_config import TestConfigProcessor
 from lib.test_executor import TestExecutor, glob_filter_matches
-from lib.db_reporter import DBReporter, NullDBReporter
+from lib.db_reporter import DBReporter, NullDBReporter, DBConfig
 
 # Configure logging
 logging.basicConfig(
@@ -64,12 +64,20 @@ def main():
         # Create test executor
         executor = TestExecutor(config_processor, args)
 
-        # Create DB reporter — no-op when --db-url is absent.
-        db_url = getattr(args, 'db_url', '') or ''
-        if db_url:
+        # Create DB reporter — writes straight to Postgres. Connection params are
+        # resolved at runtime; reporting is enabled only when a host or DSN is set.
+        db_cfg = DBConfig(
+            dsn=getattr(args, 'db_dsn', '') or None,
+            host=getattr(args, 'db_host', '') or None,
+            port=getattr(args, 'db_port', '') or None,
+            user=getattr(args, 'db_user', '') or None,
+            db_password=getattr(args, 'db_password', None),
+            database=getattr(args, 'database', '') or None,
+        )
+        if db_cfg.configured:
             sysinfo = executor.collect_system_info()
             db_reporter = DBReporter(
-                base_url=db_url,
+                db_config=db_cfg,
                 config_file=args.config,
                 gpu_arch=sysinfo.get('gpu_arch', ''),
                 rocm_version=sysinfo.get('rocm_version', ''),

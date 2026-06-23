@@ -1,0 +1,4 @@
+# Optional: only needed when result reporting to the dashboard database is
+# enabled (--db-host / --db-dsn / RCCL_TEST_DB_*). The runner works without it
+# when DB reporting is off.
+psycopg2-binary>=2.9

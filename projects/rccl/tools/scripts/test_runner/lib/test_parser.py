@@ -142,13 +142,23 @@ Examples:
             default=False,
             help="Use MPICH syntax (-env) instead of OpenMPI (-x) for passing env vars to mpirun"
         )
-        self.parser.add_argument(
-            '--db-url',
-            type=str,
-            default=os.environ.get('RCCL_TEST_DB_URL', ''),
-            help="Dashboard base URL for DB reporting, e.g. http://my-machine:8080 "
-                 "(also accepts RCCL_TEST_DB_URL env var)"
-        )
+        # Direct-to-Postgres reporting. Connection params are resolved at runtime
+        # (these CLI args win, then RCCL_TEST_DB_* env, then an interactive prompt
+        # for the password). Reporting is enabled when a host or DSN is provided.
+        self.parser.add_argument('--db-dsn', type=str, default='',
+            help="Full libpq DSN for result reporting (overrides individual --db-* args).")
+        self.parser.add_argument('--db-host', type=str, default='',
+            help="Postgres host for result reporting (also RCCL_TEST_DB_HOST). "
+                 "Reporting is enabled when set.")
+        self.parser.add_argument('--db-port', type=str, default='',
+            help="Postgres port (default 5432, also RCCL_TEST_DB_PORT).")
+        self.parser.add_argument('--db-user', type=str, default='',
+            help="Postgres user (also RCCL_TEST_DB_USER).")
+        self.parser.add_argument('--db-password', type=str, default=None,
+            help="Postgres password; if omitted, read from RCCL_TEST_DB_PASSWORD "
+                 "or prompted interactively.")
+        self.parser.add_argument('--database', type=str, default='',
+            help="Target database name (also RCCL_TEST_DB_NAME).")
 
     def parse_arguments(self):
         """Parse command-line arguments"""
@@ -186,8 +196,9 @@ Examples:
             _extra_mpi = ' '.join(p for p in (_cli_mpi, _env_mpi) if p)
             print(f"Extra MPI args:    {_extra_mpi if _extra_mpi else 'none'}")
             print(f"MPI implementation: {'mpich' if args.mpich else 'openmpi (default)'}")
-            _db_url = getattr(args, 'db_url', '') or os.environ.get('RCCL_TEST_DB_URL', '')
-            print(f"DB reporting:      {'enabled' if _db_url else 'disabled (no --db-url)'}")
+            _db_on = bool(getattr(args, 'db_dsn', '') or os.environ.get('RCCL_TEST_DB_DSN')
+                          or getattr(args, 'db_host', '') or os.environ.get('RCCL_TEST_DB_HOST'))
+            print(f"DB reporting:      {'enabled (direct Postgres)' if _db_on else 'disabled (no --db-host/--db-dsn)'}")
             print("="*80)
             print()
 
