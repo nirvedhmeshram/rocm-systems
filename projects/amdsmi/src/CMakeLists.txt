@@ -140,6 +140,10 @@ foreach(_TARGET IN LISTS _AMD_SMI_ALL_TARGETS)
         PRIVATE rt Threads::Threads ${CMAKE_DL_LIBS} amdsminic ${FILESYSTEM_LIB} ${UALOE_LINK_LIBRARIES}
     )
 
+    if(ENABLE_ADDC)
+        target_compile_definitions(${_TARGET} PRIVATE AMDSMI_ENABLE_ADDC)
+    endif()
+
     target_include_directories(
         ${_TARGET}
         PRIVATE
