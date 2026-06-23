@@ -10,6 +10,9 @@
 #include <hip_test_kernels.hh>
 
 #include <hip_test_common.hh>
+#include <utils.hh>
+
+#include <chrono>
 
 /**
  * @addtogroup hipEventCreateWithFlags hipEventCreateWithFlags
@@ -106,6 +109,60 @@ HIP_TEST_CASE(Unit_hipEventIpc) {
 
   HipTest::checkVectorADD(A_h, B_h, C_h, N, true);
   HipTest::freeArrays(A_d, B_d, C_d, A_h, B_h, C_h, false);
+}
+
+/**
+ * Test Description
+ * ------------------------
+ *  - Verify that hipEventDestroy() on an interprocess (IPC) event is non-blocking.
+ *    Destroying a still-pending IPC event must NOT wait for the event's own GPU work
+ *    to finish (matching CUDA's cudaEventDestroy() semantics). The IPC signal is handed
+ *    to a per-device deferred-cleanup queue and freed at the next device-wide sync,
+ *    so destroy returns in ~microseconds rather than ~the full kernel duration.
+ * Test source
+ * ------------------------
+ *  - unit/event/Unit_hipEventIpc.cc
+ * Test requirements
+ * ------------------------
+ *  - Device supports IPC events
+ *  - HIP_VERSION >= 7.0
+ */
+HIP_TEST_CASE(Unit_hipEventIpc_DestroyNonBlocking) {
+  hipDeviceProp_t props;
+  HIP_CHECK(hipGetDeviceProperties(&props, 0));
+  if (!props.ipcEventSupported) {
+    HIP_SKIP_TEST("Device does not support IPC events");
+  }
+
+  hipStream_t stream;
+  HIP_CHECK(hipStreamCreate(&stream));
+
+  hipEvent_t event;
+  HIP_CHECK(hipEventCreateWithFlags(&event, hipEventInterprocess | hipEventDisableTiming));
+
+  // Keep the GPU busy so the event's recorded work is still in flight at destroy time.
+  const std::chrono::milliseconds delay(isQuickLevel() ? 500 : 2000);
+  LaunchDelayKernel(delay, stream);
+  HIP_CHECK(hipEventRecord(event, stream));
+
+  // The event completes only behind the long delay kernel, so it must read as pending.
+  HIP_CHECK_ERROR(hipEventQuery(event), hipErrorNotReady);
+
+  // The call under test: destroy must return immediately, not block for the kernel.
+  const auto t0 = std::chrono::steady_clock::now();
+  HIP_CHECK(hipEventDestroy(event));
+  const auto t1 = std::chrono::steady_clock::now();
+  const auto destroy_ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+
+  INFO("hipEventDestroy took " << destroy_ms << " ms; delay kernel is " << delay.count() << " ms");
+  // A non-blocking destroy is sub-millisecond; the pre-fix blocking destroy took ~the full
+  // kernel duration. Half the kernel time cleanly separates the two while tolerating jitter.
+  REQUIRE(destroy_ms < delay.count() / 2);
+
+  // Drain the per-device deferred IPC-signal cleanup queue now that the work can complete.
+  HIP_CHECK(hipDeviceSynchronize());
+  HIP_CHECK(hipStreamDestroy(stream));
 }
 
 /**
