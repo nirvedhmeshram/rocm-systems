@@ -24,6 +24,10 @@
 
 #include "amd_smi/impl/third_party/nlohmann/json.hpp"
 
+#ifdef AMDSMI_ENABLE_ADDC
+#include "addc/lib_c.h"
+#endif
+
 namespace amdsmi {
 namespace addc {
 
@@ -43,6 +47,28 @@ bool parse_afids_from_summary(const std::string& summary_json, std::vector<uint6
   }
   return true;
 }
+
+#ifdef AMDSMI_ENABLE_ADDC
+amdsmi_status_t get_afids_via_addc(const char* cper_buffer, uint32_t buf_size,
+                                   std::vector<uint64_t>& out) {
+  out.clear();
+
+  char* json_out = nullptr;
+  char* error_out = nullptr;
+  int rc = addc_get_error_summary(reinterpret_cast<const uint8_t*>(cper_buffer), buf_size,
+                                  /*filename=*/nullptr, &json_out, &error_out);
+  if (rc != 0 || json_out == nullptr) {
+    addc_free_string(json_out);
+    addc_free_string(error_out);
+    return AMDSMI_STATUS_UNEXPECTED_DATA;
+  }
+
+  const bool ok = parse_afids_from_summary(json_out, out);
+  addc_free_string(json_out);
+  addc_free_string(error_out);
+  return ok ? AMDSMI_STATUS_SUCCESS : AMDSMI_STATUS_UNEXPECTED_DATA;
+}
+#endif  // AMDSMI_ENABLE_ADDC
 
 }  // namespace addc
 }  // namespace amdsmi
