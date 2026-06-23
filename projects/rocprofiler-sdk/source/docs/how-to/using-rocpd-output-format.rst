@@ -1821,3 +1821,327 @@ You can use the following methods to access the data in the rocpd database:
       rocpd convert -i results.db --f pftrace
 
   2. Open in Perfetto UI to see the visual timeline.
+
+.. _rocpd-pc-sampling:
+
+PC sampling data (schema 3.0.2)
+---------------------------------
+
+PC sampling support was introduced in schema version **3.0.2**. When
+``rocprofv3`` is run with ``--pc-sampling-beta-enabled`` and
+``--output-format rocpd``, the following tables are populated.
+
+rocpd_gpu_pc_sample
+++++++++++++++++++++
+
+One row per collected PC sample. Key columns:
+
+.. list-table::
+  :header-rows: 1
+  :widths: 25 15 60
+
+  * - Column
+    - Type
+    - Description
+  * - ``event_id``
+    - INTEGER
+    - Foreign key into ``rocpd_event``. The corresponding event's ``parent_id``
+      points to the dispatch event.
+  * - ``timestamp``
+    - INTEGER
+    - Sample timestamp in nanoseconds.
+  * - ``dispatch_id``
+    - INTEGER
+    - Dispatch ID of the kernel being sampled.
+  * - ``correlation_id``
+    - INTEGER
+    - External correlation ID linking back to the API launch call.
+  * - ``exec_mask``
+    - INTEGER
+    - Bitmask of active SIMD lanes at sample time.
+  * - ``code_object_id``
+    - INTEGER
+    - Identifies the loaded code object containing the sampled instruction.
+  * - ``code_object_offset``
+    - INTEGER
+    - Byte offset within the code object (the program counter value).
+  * - ``agent_id``
+    - INTEGER
+    - GPU agent on which the sample was collected.
+  * - ``tid``
+    - INTEGER
+    - CPU thread that launched the parent kernel dispatch.
+  * - ``wave_issued``
+    - INTEGER
+    - Whether the wave issued an instruction (1 = yes, 0 = no). Stochastic only; NULL for host-trap.
+  * - ``inst_type``
+    - INTEGER
+    - Instruction type if ``wave_issued = 1``. Stochastic only; NULL for host-trap.
+  * - ``stall_reason``
+    - INTEGER
+    - Stall reason if ``wave_issued = 0``. Stochastic only; NULL for host-trap.
+  * - ``wave_count``
+    - INTEGER
+    - Total active waves on the compute unit at sample time. Stochastic only; NULL for host-trap.
+
+rocpd_blob_event, rocpd_info_blob_schema, rocpd_info_blob_field
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+Each PC sample also has a companion row in ``rocpd_blob_event`` containing a
+packed binary blob of architecture-specific hardware state. The blob layout is
+self-describing through two metadata tables:
+
+- ``rocpd_info_blob_schema``: Describes the overall layout (name ``pc_sample_extdata_v1``,
+  total byte size, byte order ``little``, alignment ``1``).
+- ``rocpd_info_blob_field``: One row per field with name, byte offset, size, and
+  data type. Consumers can decode the binary without hard-coding struct offsets.
+
+The blob contains HW ID fields (``hw_id_chiplet``, ``hw_id_wave_id``,
+``hw_id_simd_id``, ``hw_id_pipe_id``, ``hw_id_cu_or_wgp_id``,
+``hw_id_shader_array_id``, ``hw_id_shader_engine_id``, ``hw_id_workgroup_id``,
+``hw_id_vm_id``, ``hw_id_queue_id``, ``hw_id_microengine_id``) and workgroup
+coordinates (``workgroup_id_x/y/z``, ``wave_in_group``). For stochastic sampling,
+arbiter-state fields (``arb_state_issue_*`` and ``arb_state_stall_*``) are also
+non-zero.
+
+Decoded view
++++++++++++++
+
+The ``rocpd`` post-processing tools provide a ``rocpd_gpu_pc_sample_decoded``
+temporary view that automatically unpacks the binary blob fields alongside all
+columns from ``rocpd_gpu_pc_sample``. The view is created on demand by
+``setup_blob_views``, which reads ``rocpd_info_blob_schema`` at startup,
+locates the ``pc_sample_extdata_v1`` registration with
+``source_table = 'rocpd_gpu_pc_sample'``, and generates the decoded view.
+No blob bytes are read unless the view is actually queried; queries against
+``rocpd_gpu_pc_sample`` directly incur zero unpacking overhead.
+
+The decoded view exposes every column from ``rocpd_gpu_pc_sample`` plus one
+additional column per blob field, including ``hw_id_chiplet``,
+``hw_id_wave_id``, ``hw_id_simd_id``, ``hw_id_pipe_id``,
+``hw_id_cu_or_wgp_id``, ``hw_id_shader_array_id``,
+``hw_id_shader_engine_id``, ``hw_id_workgroup_id``, ``hw_id_vm_id``,
+``hw_id_queue_id``, ``hw_id_microengine_id``, ``wave_in_group``,
+``workgroup_id_x``, ``workgroup_id_y``, ``workgroup_id_z``,
+``dual_issue_valu``, all ``arb_state_issue_*`` and ``arb_state_stall_*``
+fields.
+
+Querying PC sampling data
+++++++++++++++++++++++++++
+
+Each PC sample event's ``parent_id`` in ``rocpd_event`` points to the dispatch
+event for the kernel being sampled:
+
+.. code-block:: bash
+
+  rocpd query -i results.db --query "SELECT dispatch_id, arb_state_issue_valu FROM rocpd_gpu_pc_sample_decoded LIMIT 10"
+
+**Verify parent-dispatch linkage:**
+
+.. code-block:: bash
+
+  rocpd query -i profile.db --query "
+  SELECT
+    COUNT(*) AS total_samples,
+    SUM(CASE WHEN E.parent_id IS NOT NULL THEN 1 ELSE 0 END) AS linked_samples
+  FROM rocpd_gpu_pc_sample S
+  JOIN rocpd_event E ON E.id = S.event_id"
+
+**VALU issue rate per kernel** (stochastic sampling):
+
+.. code-block:: bash
+
+  rocpd query -i profile.db --query "
+  WITH per_kernel AS (
+    SELECT
+      KD.kernel_id,
+      SUM(CASE WHEN S.arb_state_issue_valu = 1 THEN 1 ELSE 0 END) AS issued_valu_samples,
+      COUNT(*) AS total_samples
+    FROM rocpd_gpu_pc_sample_decoded S
+    INNER JOIN rocpd_kernel_dispatch KD ON KD.dispatch_id = S.dispatch_id
+    GROUP BY KD.kernel_id
+  )
+  SELECT
+    PK.kernel_id,
+    KS.display_name,
+    PK.issued_valu_samples,
+    PK.total_samples,
+    (100.0 * PK.issued_valu_samples) / NULLIF(PK.total_samples, 0) AS issued_valu_pct
+  FROM per_kernel PK
+  LEFT JOIN rocpd_info_kernel_symbol KS ON KS.id = PK.kernel_id
+  ORDER BY PK.issued_valu_samples DESC
+  LIMIT 20"
+
+**Dispatches with highest stall pressure** (stochastic sampling):
+
+.. code-block:: bash
+
+  rocpd query -i profile.db --query "
+  SELECT
+    S.dispatch_id,
+    COUNT(*) AS samples,
+    SUM(CASE WHEN
+          S.arb_state_stall_valu=1 OR S.arb_state_stall_matrix=1 OR
+          S.arb_state_stall_lds=1 OR S.arb_state_stall_lds_direct=1 OR
+          S.arb_state_stall_scalar=1 OR S.arb_state_stall_vmem_tex=1 OR
+          S.arb_state_stall_flat=1 OR S.arb_state_stall_exp=1 OR
+          S.arb_state_stall_misc=1 OR S.arb_state_stall_brmsg=1
+        THEN 1 ELSE 0 END) AS stall_samples,
+    (100.0 * SUM(CASE WHEN
+          S.arb_state_stall_valu=1 OR S.arb_state_stall_matrix=1 OR
+          S.arb_state_stall_lds=1 OR S.arb_state_stall_lds_direct=1 OR
+          S.arb_state_stall_scalar=1 OR S.arb_state_stall_vmem_tex=1 OR
+          S.arb_state_stall_flat=1 OR S.arb_state_stall_exp=1 OR
+          S.arb_state_stall_misc=1 OR S.arb_state_stall_brmsg=1
+        THEN 1 ELSE 0 END)) / NULLIF(COUNT(*), 0) AS stall_pct
+  FROM rocpd_gpu_pc_sample_decoded S
+  GROUP BY S.dispatch_id
+  ORDER BY stall_samples DESC, samples DESC
+  LIMIT 20"
+
+**Kernels with highest stall ratio** (stochastic sampling):
+
+.. code-block:: bash
+
+  rocpd query -i profile.db --query "
+  WITH per_kernel AS (
+    SELECT
+      KD.kernel_id,
+      COUNT(*) AS samples,
+      SUM(CASE WHEN
+            S.arb_state_stall_valu=1 OR S.arb_state_stall_matrix=1 OR
+            S.arb_state_stall_lds=1 OR S.arb_state_stall_lds_direct=1 OR
+            S.arb_state_stall_scalar=1 OR S.arb_state_stall_vmem_tex=1 OR
+            S.arb_state_stall_flat=1 OR S.arb_state_stall_exp=1 OR
+            S.arb_state_stall_misc=1 OR S.arb_state_stall_brmsg=1
+          THEN 1 ELSE 0 END) AS stall_samples
+    FROM rocpd_gpu_pc_sample_decoded S
+    INNER JOIN rocpd_kernel_dispatch KD ON KD.dispatch_id = S.dispatch_id
+    GROUP BY KD.kernel_id
+  )
+  SELECT
+    PK.kernel_id, KS.display_name, PK.samples, PK.stall_samples,
+    (100.0 * PK.stall_samples) / NULLIF(PK.samples, 0) AS stall_pct
+  FROM per_kernel PK
+  LEFT JOIN rocpd_info_kernel_symbol KS ON KS.id = PK.kernel_id
+  ORDER BY stall_pct DESC, PK.samples DESC
+  LIMIT 20"
+
+**Top sampled instruction offsets per kernel:**
+
+.. code-block:: bash
+
+  rocpd query -i profile.db --query "
+  SELECT
+    KD.kernel_id, KS.display_name, S.code_object_offset,
+    COUNT(*) AS samples_at_offset
+  FROM rocpd_gpu_pc_sample_decoded S
+  INNER JOIN rocpd_kernel_dispatch KD ON KD.dispatch_id = S.dispatch_id
+  LEFT JOIN rocpd_info_kernel_symbol KS ON KS.id = KD.kernel_id
+  GROUP BY KD.kernel_id, KS.display_name, S.code_object_offset
+  ORDER BY samples_at_offset DESC
+  LIMIT 50"
+
+**Instruction histogram per kernel** (hot vs. cold offsets):
+
+.. code-block:: bash
+
+  rocpd query -i profile.db --query "
+  WITH per_instruction AS (
+    SELECT KD.kernel_id, S.code_object_offset, COUNT(*) AS instruction_samples
+    FROM rocpd_gpu_pc_sample_decoded S
+    INNER JOIN rocpd_kernel_dispatch KD ON KD.dispatch_id = S.dispatch_id
+    GROUP BY KD.kernel_id, S.code_object_offset
+  ),
+  histogram AS (
+    SELECT
+      kernel_id,
+      CASE
+        WHEN instruction_samples < 10   THEN '1-9'
+        WHEN instruction_samples < 100  THEN '10-99'
+        WHEN instruction_samples < 1000 THEN '100-999'
+        ELSE '1000+'
+      END AS sample_bucket,
+      COUNT(*) AS instruction_count
+    FROM per_instruction
+    GROUP BY kernel_id, sample_bucket
+  )
+  SELECT H.kernel_id, KS.display_name, H.sample_bucket, H.instruction_count
+  FROM histogram H
+  LEFT JOIN rocpd_info_kernel_symbol KS ON KS.id = H.kernel_id
+  ORDER BY H.kernel_id, H.sample_bucket"
+
+**Internal pipeline latency hole detection** (stochastic sampling):
+
+.. code-block:: bash
+
+  rocpd query -i profile.db --query "
+  WITH sk AS (
+    SELECT KD.kernel_id, S.code_object_id, S.code_object_offset, S.inst_type,
+           S.dual_issue_valu,
+           S.arb_state_issue_valu, S.arb_state_stall_valu,
+           S.arb_state_issue_matrix, S.arb_state_stall_matrix,
+           S.arb_state_issue_lds, S.arb_state_stall_lds,
+           S.arb_state_issue_lds_direct, S.arb_state_stall_lds_direct,
+           S.arb_state_issue_scalar, S.arb_state_stall_scalar,
+           S.arb_state_issue_vmem_tex, S.arb_state_stall_vmem_tex,
+           S.arb_state_issue_flat, S.arb_state_stall_flat,
+           S.arb_state_issue_exp, S.arb_state_stall_exp,
+           S.arb_state_issue_misc, S.arb_state_stall_misc,
+           S.arb_state_issue_brmsg, S.arb_state_stall_brmsg
+    FROM rocpd_gpu_pc_sample_decoded S
+    INNER JOIN rocpd_kernel_dispatch KD ON KD.dispatch_id = S.dispatch_id
+  ),
+  per_pc AS (
+    SELECT kernel_id, code_object_id, code_object_offset,
+           COUNT(*) AS samples,
+           MIN(CASE WHEN inst_type='ROCPROFILER_PC_SAMPLING_INSTRUCTION_TYPE_NO_INST'
+                    THEN 1 ELSE 0 END) AS internal_pipeline,
+           SUM(CASE WHEN dual_issue_valu=1 OR
+                         arb_state_issue_valu=1 OR arb_state_issue_matrix=1 OR
+                         arb_state_issue_lds=1 OR arb_state_issue_lds_direct=1 OR
+                         arb_state_issue_scalar=1 OR arb_state_issue_vmem_tex=1 OR
+                         arb_state_issue_flat=1 OR arb_state_issue_exp=1 OR
+                         arb_state_issue_misc=1 OR arb_state_issue_brmsg=1
+                    THEN 1 ELSE 0 END) AS any_pipeline_issue_samples,
+           SUM(CASE WHEN
+                         (arb_state_issue_valu=1       AND arb_state_stall_valu=0) OR
+                         (arb_state_issue_matrix=1     AND arb_state_stall_matrix=0) OR
+                         (arb_state_issue_lds=1        AND arb_state_stall_lds=0) OR
+                         (arb_state_issue_lds_direct=1 AND arb_state_stall_lds_direct=0) OR
+                         (arb_state_issue_scalar=1     AND arb_state_stall_scalar=0) OR
+                         (arb_state_issue_vmem_tex=1   AND arb_state_stall_vmem_tex=0) OR
+                         (arb_state_issue_flat=1       AND arb_state_stall_flat=0) OR
+                         (arb_state_issue_exp=1        AND arb_state_stall_exp=0) OR
+                         (arb_state_issue_misc=1       AND arb_state_stall_misc=0) OR
+                         (arb_state_issue_brmsg=1      AND arb_state_stall_brmsg=0)
+                    THEN 1 ELSE 0 END) AS useful_issue_samples
+    FROM sk
+    GROUP BY kernel_id, code_object_id, code_object_offset
+  )
+  SELECT kernel_id, code_object_id, code_object_offset, samples,
+         internal_pipeline, any_pipeline_issue_samples, useful_issue_samples,
+         CASE WHEN internal_pipeline=1 AND useful_issue_samples=0 THEN 1 ELSE 0 END
+           AS internal_latency_hole
+  FROM per_pc
+  WHERE internal_pipeline=1
+  ORDER BY internal_latency_hole DESC, any_pipeline_issue_samples DESC, samples DESC"
+
+**Schema usage by agent and GFX target version:**
+
+.. code-block:: bash
+
+  rocpd query -i profile.db --query "
+  SELECT
+    A.name AS agent_name,
+    CAST(json_extract(A.extdata, '$.gfx_target_version') AS INTEGER) AS gfx_target_version,
+    BS.name AS schema_name, BS.version AS schema_version,
+    COUNT(*) AS samples
+  FROM rocpd_gpu_pc_sample PS
+  LEFT JOIN rocpd_info_agent A ON A.id = PS.agent_id
+  LEFT JOIN rocpd_info_blob_schema BS ON BS.id = PS.extdata_schema_id
+  GROUP BY A.name, gfx_target_version, PS.extdata_schema_id, BS.name, BS.version
+  ORDER BY samples DESC"
+
+For information about enabling PC sampling in ``rocprofv3``, see
+:ref:`using-pc-sampling` and :ref:`pc-sampling-rocpd-output`.
