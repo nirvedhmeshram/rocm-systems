@@ -106,11 +106,20 @@ if(ENABLE_ADDC)
     set(ADDC_REPO "git@github-emu:AMD-DCTOOLS/addc-base.git")
     set(ADDC_TAG "v3.2.0")
     set(ADDC_DIR "${CMAKE_CURRENT_BINARY_DIR}/addc-base")
-    if(NOT EXISTS "${ADDC_DIR}/meson.build")
+    # Record the cloned tag so bumping ADDC_TAG on an already-configured tree
+    # forces a fresh clone instead of silently reusing the old checkout.
+    set(ADDC_TAG_STAMP "${ADDC_DIR}/.amdsmi_addc_tag")
+    set(_addc_cloned_tag "")
+    if(EXISTS "${ADDC_TAG_STAMP}")
+        file(READ "${ADDC_TAG_STAMP}" _addc_cloned_tag)
+        string(STRIP "${_addc_cloned_tag}" _addc_cloned_tag)
+    endif()
+    if(NOT EXISTS "${ADDC_DIR}/meson.build" OR NOT "${_addc_cloned_tag}" STREQUAL "${ADDC_TAG}")
         if(NOT GIT_FOUND)
             message(FATAL_ERROR "ENABLE_ADDC requires Git to clone ${ADDC_REPO}")
         endif()
         message(STATUS "Cloning ${ADDC_REPO} (${ADDC_TAG}) for ENABLE_ADDC")
+        file(REMOVE_RECURSE "${ADDC_DIR}")
         execute_process(
             COMMAND ${GIT_EXECUTABLE} clone --depth 1 --branch ${ADDC_TAG} ${ADDC_REPO} ${ADDC_DIR}
             RESULT_VARIABLE ADDC_CLONE_RESULT
@@ -118,6 +127,7 @@ if(ENABLE_ADDC)
         if(NOT ADDC_CLONE_RESULT EQUAL 0)
             message(FATAL_ERROR "Failed to clone ${ADDC_REPO} (rc=${ADDC_CLONE_RESULT})")
         endif()
+        file(WRITE "${ADDC_TAG_STAMP}" "${ADDC_TAG}\n")
     endif()
 
     # Every library translation unit lives under src/; only the addc-tool CLI is
@@ -130,6 +140,8 @@ if(ENABLE_ADDC)
         addc_lib
         PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON POSITION_INDEPENDENT_CODE ON
     )
+    # ADDC #includes <nlohmann/json.hpp>; satisfy it with amd-smi's vendored
+    # copy, which must stay version-matched to ADDC's expected nlohmann (3.12.0).
     target_include_directories(addc_lib PUBLIC "${ADDC_DIR}/include" PRIVATE "${INC_DIR}/impl/third_party")
     target_compile_definitions(addc_lib PRIVATE ADDC_BUILDING_LIB ADDC_VERSION="${ADDC_TAG}")
     # ADDC owns its own warning policy; do not impose amd-smi's -Werror/-Wconversion on it.

@@ -59,4 +59,23 @@ TEST(AddcAdapter, MalformedJsonFailsAndClears) {
   EXPECT_TRUE(out.empty());
 }
 
+TEST(AddcAdapter, ObjectRootFailsAndClears) {
+  std::vector<uint64_t> out{5};
+  EXPECT_FALSE(amdsmi::addc::parse_afids_from_summary(R"({"afid":1})", out));
+  EXPECT_TRUE(out.empty());
+}
+
+TEST(AddcAdapter, SkipsNonUnsignedAfidValues) {
+  std::vector<uint64_t> out;
+  ASSERT_TRUE(amdsmi::addc::parse_afids_from_summary(
+      R"([{"afid":-1},{"afid":"x"},{"afid":1.5},{"afid":7}])", out));
+  EXPECT_EQ(out, (std::vector<uint64_t>{7}));
+}
+
+TEST(AddcAdapter, SkipsNonObjectArrayEntries) {
+  std::vector<uint64_t> out;
+  ASSERT_TRUE(amdsmi::addc::parse_afids_from_summary(R"([123,{"afid":1}])", out));
+  EXPECT_EQ(out, (std::vector<uint64_t>{1}));
+}
+
 }  // namespace

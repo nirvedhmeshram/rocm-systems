@@ -43,7 +43,9 @@ bool parse_afids_from_summary(const std::string& summary_json, std::vector<uint6
 #ifdef AMDSMI_ENABLE_ADDC
 // Decodes the AFIDs in a single raw CPER record by routing the record through
 // the ADDC library's error-summary C API. On success returns
-// AMDSMI_STATUS_SUCCESS and fills out; out is cleared on failure.
+// AMDSMI_STATUS_SUCCESS and fills out; out is cleared on failure. Note this
+// differs from the default ras-decode path: a record ADDC cannot summarize
+// yields AMDSMI_STATUS_UNEXPECTED_DATA rather than success with zero AFIDs.
 amdsmi_status_t get_afids_via_addc(const char* cper_buffer, uint32_t buf_size,
                                    std::vector<uint64_t>& out);
 #endif  // AMDSMI_ENABLE_ADDC
