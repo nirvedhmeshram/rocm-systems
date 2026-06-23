@@ -8,6 +8,10 @@ Full documentation for amd_smi_lib is available at [https://rocm.docs.amd.com/pr
 
 ### Added
 
+- **Added optional `ENABLE_ADDC` build option to route CPER decoding through the ADDC library**.
+  - When configured with `-DENABLE_ADDC=ON`, AFID extraction (`amdsmi_get_afids_from_cper`) decodes the raw CPER record through the ADDC library's error-summary C API instead of the in-tree ras-decode path.
+  - The option is off by default; the default build and public API are unchanged. ADDC requires a C++20 toolchain (GCC 13+) and is built as an isolated static library consumed only through its C API.
+
 - **Added `--folder` support to `amd-smi ras --afid`**.
   - `amd-smi ras --afid --folder <DIR>` decodes every `*.cper` in a directory and prints a `file_name | list of afids` table (or a JSON array under `--json`).
   - Records with no AFIDs show `-`; files that cannot be parsed show `decode failed`.
