@@ -1,3 +1,4 @@
+-- Copyright (c) 2026 Advanced Micro Devices, Inc. All rights reserved.
 CREATE VIEW IF NOT EXISTS
     `rocpd_metadata` AS
 SELECT

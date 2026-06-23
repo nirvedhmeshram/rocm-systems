@@ -68,6 +68,7 @@
 #include <filesystem>
 #include <initializer_list>
 #include <limits>
+#include <optional>
 #include <set>
 #include <type_traits>
 #include <unordered_map>
@@ -1514,7 +1515,8 @@ write_rocpd(
                                     const auto& workgroup,
                                     bool        enable_duplicate_check) {
             // Skip if we've already processed this dispatch_id
-            if(dispatch_evt_ids.size() > dispatch_id && dispatch_evt_ids[dispatch_id] != 0) return;
+            if(dispatch_evt_ids.size() > dispatch_id && dispatch_evt_ids[dispatch_id].has_value())
+                return;
 
             auto kern_name = (kernel_id > 0)
                                  ? tool_metadata.get_kernel_symbol(kernel_id)->formatted_kernel_name
@@ -1530,10 +1532,11 @@ write_rocpd(
 
             // Ensure dispatch_evt_ids is large enough
             if(dispatch_evt_ids.size() < dispatch_id + 1)
-                common::container::resize(dispatch_evt_ids, dispatch_id + 1, 0UL);
+                common::container::resize(
+                    dispatch_evt_ids, dispatch_id + 1, std::optional<uint64_t>{});
 
             // Check for duplicates if requested
-            if(enable_duplicate_check && dispatch_evt_ids.at(dispatch_id) != 0)
+            if(enable_duplicate_check && dispatch_evt_ids.at(dispatch_id).has_value())
             {
                 ROCP_CI_LOG(WARNING)
                     << fmt::format("duplicate kernel dispatch id {} :: event_id={}, kernel_id={}, "
@@ -1556,11 +1559,13 @@ write_rocpd(
             auto agent_node_id = tool_metadata.get_agent(info.agent_id)->node_id;
 
             if(dispatch_agent_ids.size() < dispatch_id + 1)
-                common::container::resize(dispatch_agent_ids, dispatch_id + 1, 0UL);
+                common::container::resize(
+                    dispatch_agent_ids, dispatch_id + 1, std::optional<uint64_t>{});
             dispatch_agent_ids.at(dispatch_id) = agent_node_id;
 
             if(dispatch_thread_ids.size() < dispatch_id + 1)
-                common::container::resize(dispatch_thread_ids, dispatch_id + 1, 0UL);
+                common::container::resize(
+                    dispatch_thread_ids, dispatch_id + 1, std::optional<uint64_t>{});
             dispatch_thread_ids.at(dispatch_id) = static_cast<uint64_t>(thread_id);
 
             // Insert into kernel dispatch table
@@ -1667,7 +1672,11 @@ write_rocpd(
                     const auto& info        = record.dispatch_data.dispatch_info;
                     auto        dispatch_id = info.dispatch_id;
 
-                    auto evt_id = dispatch_evt_ids.at(dispatch_id);
+                    if(dispatch_id >= dispatch_evt_ids.size() ||
+                       !dispatch_evt_ids.at(dispatch_id).has_value())
+                        continue;
+
+                    auto evt_id = dispatch_evt_ids.at(dispatch_id).value();
                     for(const auto& count : record.read())
                     {
                         get_insert_statement(db,
@@ -2078,10 +2087,9 @@ write_rocpd(
             }
         };
 
-    auto dispatch_to_evt_id    = common::container::stable_vector<uint64_t, 512>{};
-    auto dispatch_to_agent_id  = common::container::stable_vector<uint64_t, 512>{};
-    auto dispatch_to_thread_id = common::container::stable_vector<uint64_t, 512>{};
-
+    auto dispatch_to_evt_id    = common::container::stable_vector<std::optional<uint64_t>, 512>{};
+    auto dispatch_to_agent_id  = common::container::stable_vector<std::optional<uint64_t>, 512>{};
+    auto dispatch_to_thread_id = common::container::stable_vector<std::optional<uint64_t>, 512>{};
     // ---------------------------------------------------------------------------
     // Packed blob struct — architecture-specific fields stored alongside each
     // PC sample row.  The schema is self-describing via rocpd_info_blob_schema /
@@ -2092,21 +2100,22 @@ write_rocpd(
     struct pc_sample_extdata_v1
     {
         // hw_id fields
-        uint8_t hw_id_chiplet           = 0;
-        uint8_t hw_id_wave_id           = 0;
-        uint8_t hw_id_simd_id           = 0;
-        uint8_t hw_id_pipe_id           = 0;
-        uint8_t hw_id_cu_or_wgp_id      = 0;
-        uint8_t hw_id_shader_array_id   = 0;
-        uint8_t hw_id_shader_engine_id  = 0;
-        uint8_t hw_id_workgroup_id      = 0;
-        uint8_t hw_id_vm_id             = 0;
-        uint8_t hw_id_queue_id          = 0;
-        uint8_t hw_id_microengine_id    = 0;
-        uint8_t wave_in_group           = 0;
-        uint32_t workgroup_id_x     = 0;
-        uint32_t workgroup_id_y     = 0;
-        uint32_t workgroup_id_z     = 0;
+        uint32_t hw_id_chiplet          = 0;
+        uint32_t hw_id_wave_id          = 0;
+        uint32_t hw_id_simd_id          = 0;
+        uint32_t hw_id_pipe_id          = 0;
+        uint32_t hw_id_cu_or_wgp_id     = 0;
+        uint32_t hw_id_shader_array_id  = 0;
+        uint32_t hw_id_shader_engine_id = 0;
+        uint32_t hw_id_workgroup_id     = 0;
+        uint32_t hw_id_vm_id            = 0;
+        uint32_t hw_id_queue_id         = 0;
+        uint32_t hw_id_microengine_id   = 0;
+        // Generic PC sample fields retained for decode.
+        uint32_t wave_in_group  = 0;
+        uint32_t workgroup_id_x = 0;
+        uint32_t workgroup_id_y = 0;
+        uint32_t workgroup_id_z = 0;
         // arbiter-state fields (stochastic only; remain zero for host-trap)
         uint8_t dual_issue_valu            = 0;
         uint8_t arb_state_issue_valu       = 0;
@@ -2133,10 +2142,14 @@ write_rocpd(
 #pragma pack(pop)
 
     // ---------------------------------------------------------------------------
-    // Register the blob schema once (shared by both host-trap and stochastic).
-    // We flush the pending batch immediately after the schema row so that
-    // sqlite3_last_insert_rowid() returns the correct auto-increment id before
-    // any field rows are inserted.
+    // Design note:
+    // 1) The blob schema is registered once and shared by host-trap and
+    //    stochastic PC sampling generators.
+    // 2) get_insert_statement batches inserts, so the schema row is not visible
+    //    to sqlite3_last_insert_rowid() until the schema batch is flushed.
+    // 3) We must flush rocpd_info_blob_schema{{uuid}} before reading
+    //    sqlite3_last_insert_rowid(), and we must read it before enqueueing any
+    //    field rows in this lambda.
     // ---------------------------------------------------------------------------
     auto register_blob_schema = [&db, node_id, this_pid]() -> uint64_t {
         auto schema_table     = replace_uuid(db, "rocpd_info_blob_schema{{uuid}}");
@@ -2193,18 +2206,22 @@ write_rocpd(
 #define ADD_FIELD_U8(FIELD, DESC)                                                                  \
     add_field(                                                                                     \
         #FIELD, offsetof(pc_sample_extdata_v1, FIELD), sizeof(uint8_t), "uint8_t", false, DESC)
-        ADD_FIELD_U8(hw_id_chiplet, "HW ID chiplet index");
-        ADD_FIELD_U8(hw_id_wave_id, "HW ID wave slot index");
-        ADD_FIELD_U8(hw_id_simd_id, "HW ID SIMD index");
-        ADD_FIELD_U8(hw_id_pipe_id, "HW ID pipe index");
-        ADD_FIELD_U8(hw_id_cu_or_wgp_id, "HW ID CU (GFX9) or WGP (GFX10+) index");
-        ADD_FIELD_U8(hw_id_shader_array_id, "HW ID shader array index");
-        ADD_FIELD_U8(hw_id_shader_engine_id, "HW ID shader engine index");
-        ADD_FIELD_U8(hw_id_workgroup_id, "HW ID workgroup index");
-        ADD_FIELD_U8(hw_id_vm_id, "HW ID virtual memory ID");
-        ADD_FIELD_U8(hw_id_queue_id, "HW ID queue ID");
-        ADD_FIELD_U8(hw_id_microengine_id, "HW ID microengine (ACE) index");
-        ADD_FIELD_U8(wave_in_group, "Wave position within workgroup");
+#define ADD_FIELD_U64(FIELD, DESC)                                                                 \
+    add_field(                                                                                     \
+        #FIELD, offsetof(pc_sample_extdata_v1, FIELD), sizeof(uint64_t), "uint64_t", false, DESC)
+
+        ADD_FIELD_U32(hw_id_chiplet, "HW ID chiplet index");
+        ADD_FIELD_U32(hw_id_wave_id, "HW ID wave slot index");
+        ADD_FIELD_U32(hw_id_simd_id, "HW ID SIMD index");
+        ADD_FIELD_U32(hw_id_pipe_id, "HW ID pipe index");
+        ADD_FIELD_U32(hw_id_cu_or_wgp_id, "HW ID CU (GFX9) or WGP (GFX10+) index");
+        ADD_FIELD_U32(hw_id_shader_array_id, "HW ID shader array index");
+        ADD_FIELD_U32(hw_id_shader_engine_id, "HW ID shader engine index");
+        ADD_FIELD_U32(hw_id_workgroup_id, "HW ID workgroup index");
+        ADD_FIELD_U32(hw_id_vm_id, "HW ID virtual memory ID");
+        ADD_FIELD_U32(hw_id_queue_id, "HW ID queue ID");
+        ADD_FIELD_U32(hw_id_microengine_id, "HW ID microengine (ACE) index");
+        ADD_FIELD_U32(wave_in_group, "Wave position within workgroup");
         ADD_FIELD_U32(workgroup_id_x, "Workgroup coordinate X");
         ADD_FIELD_U32(workgroup_id_y, "Workgroup coordinate Y");
         ADD_FIELD_U32(workgroup_id_z, "Workgroup coordinate Z");
@@ -2232,15 +2249,22 @@ write_rocpd(
 
 #undef ADD_FIELD_U32
 #undef ADD_FIELD_U8
+#undef ADD_FIELD_U64
 
         return schema_id;
     };
 
     // Insert PC sampling rows, one per sample.
     //
-    // Design note: each sample gets its own rocpd_event row (event_id) and one
-    // rocpd_blob_event row with the same event_id. The parent kernel-dispatch
-    // event (when known) is linked via rocpd_event.parent_id.
+    // Design note:
+    // 1) dispatch_to_evt_id / dispatch_to_agent_id / dispatch_to_thread_id are
+    //    sparse lookup tables keyed by dispatch_id.
+    // 2) PC samples may exist without a matching kernel_dispatch record
+    //    (e.g. counter-collection-only traces), so lookup misses are expected.
+    // 3) On lookup miss we intentionally store NULL parent/agent/thread context
+    //    instead of dropping the sample, preserving data with partial context.
+    // 4) Each sample still gets a dedicated rocpd_event + rocpd_blob_event pair,
+    //    and parent_id is linked only when dispatch context is available.
     auto insert_pc_sampling_data = [&db,
                                     node_id,
                                     this_pid,
@@ -2259,25 +2283,25 @@ write_rocpd(
             {
                 const auto& record = itr.pc_sample_record;
 
-                // Resolve parent dispatch context.  All three lookups guard against the case
-                // where PC sampling data arrives for a dispatch that was not captured by the
-                // kernel_dispatch buffer (e.g. counter-collection-only traces).
+                // Resolve parent dispatch context.  Lookup is by dispatch_id; NULL when
+                // the dispatch was not captured by the kernel_dispatch buffer
+                // (e.g. counter-collection-only traces).
                 auto parent_event_id = std::optional<uint64_t>{};
                 if(record.dispatch_id < dispatch_to_evt_id.size() &&
-                   dispatch_to_evt_id.at(record.dispatch_id) != 0)
-                    parent_event_id = dispatch_to_evt_id.at(record.dispatch_id);
+                   dispatch_to_evt_id.at(record.dispatch_id).has_value())
+                    parent_event_id = dispatch_to_evt_id.at(record.dispatch_id).value();
 
                 auto agent_id = std::optional<uint64_t>{};
                 if(record.dispatch_id < dispatch_to_agent_id.size() &&
-                   dispatch_to_agent_id.at(record.dispatch_id) != 0)
-                    agent_id = dispatch_to_agent_id.at(record.dispatch_id);
+                   dispatch_to_agent_id.at(record.dispatch_id).has_value())
+                    agent_id = dispatch_to_agent_id.at(record.dispatch_id).value();
 
                 // Use the real CPU thread that launched the parent dispatch, not the SDK
                 // correlation ID (which is not a thread ID).  NULL when the dispatch is absent.
                 auto tid = std::optional<uint64_t>{};
                 if(record.dispatch_id < dispatch_to_thread_id.size() &&
-                   dispatch_to_thread_id.at(record.dispatch_id) != 0)
-                    tid = dispatch_to_thread_id.at(record.dispatch_id);
+                   dispatch_to_thread_id.at(record.dispatch_id).has_value())
+                    tid = dispatch_to_thread_id.at(record.dispatch_id).value();
 
                 auto wave_issued  = std::optional<int64_t>{};
                 auto wave_count   = std::optional<int64_t>{};
@@ -2287,19 +2311,19 @@ write_rocpd(
                 // Build the packed extdata blob from hw_id (always present) and
                 // arbiter-state snapshot (stochastic only).
                 auto extdata                  = pc_sample_extdata_v1{};
-                extdata.hw_id_chiplet         = static_cast<uint8_t>(record.hw_id.chiplet);
-                extdata.hw_id_wave_id         = static_cast<uint8_t>(record.hw_id.wave_id);
-                extdata.hw_id_simd_id         = static_cast<uint8_t>(record.hw_id.simd_id);
-                extdata.hw_id_pipe_id         = static_cast<uint8_t>(record.hw_id.pipe_id);
-                extdata.hw_id_cu_or_wgp_id    = static_cast<uint8_t>(record.hw_id.cu_or_wgp_id);
-                extdata.hw_id_shader_array_id = static_cast<uint8_t>(record.hw_id.shader_array_id);
+                extdata.hw_id_chiplet         = static_cast<uint32_t>(record.hw_id.chiplet);
+                extdata.hw_id_wave_id         = static_cast<uint32_t>(record.hw_id.wave_id);
+                extdata.hw_id_simd_id         = static_cast<uint32_t>(record.hw_id.simd_id);
+                extdata.hw_id_pipe_id         = static_cast<uint32_t>(record.hw_id.pipe_id);
+                extdata.hw_id_cu_or_wgp_id    = static_cast<uint32_t>(record.hw_id.cu_or_wgp_id);
+                extdata.hw_id_shader_array_id = static_cast<uint32_t>(record.hw_id.shader_array_id);
                 extdata.hw_id_shader_engine_id =
-                    static_cast<uint8_t>(record.hw_id.shader_engine_id);
-                extdata.hw_id_workgroup_id   = static_cast<uint8_t>(record.hw_id.workgroup_id);
-                extdata.hw_id_vm_id          = static_cast<uint8_t>(record.hw_id.vm_id);
-                extdata.hw_id_queue_id       = static_cast<uint8_t>(record.hw_id.queue_id);
-                extdata.hw_id_microengine_id = static_cast<uint8_t>(record.hw_id.microengine_id);
-                extdata.wave_in_group        = static_cast<uint8_t>(record.wave_in_group);
+                    static_cast<uint32_t>(record.hw_id.shader_engine_id);
+                extdata.hw_id_workgroup_id   = static_cast<uint32_t>(record.hw_id.workgroup_id);
+                extdata.hw_id_vm_id          = static_cast<uint32_t>(record.hw_id.vm_id);
+                extdata.hw_id_queue_id       = static_cast<uint32_t>(record.hw_id.queue_id);
+                extdata.hw_id_microengine_id = static_cast<uint32_t>(record.hw_id.microengine_id);
+                extdata.wave_in_group        = static_cast<uint32_t>(record.wave_in_group);
                 extdata.workgroup_id_x       = static_cast<uint32_t>(record.workgroup_id.x);
                 extdata.workgroup_id_y       = static_cast<uint32_t>(record.workgroup_id.y);
                 extdata.workgroup_id_z       = static_cast<uint32_t>(record.workgroup_id.z);
@@ -2374,10 +2398,9 @@ write_rocpd(
                         insert_value("event_id", static_cast<int64_t>(sample_event_id)),
                         insert_value("dispatch_id", record.dispatch_id),
                         insert_value("correlation_id", record.correlation_id.external.value),
-                        insert_value("exec_mask", static_cast<int64_t>(record.exec_mask)),
-                        insert_value("code_object_id", static_cast<uint64_t>(record.pc.code_object_id)),
-                        insert_value("code_object_offset",
-                                     static_cast<uint64_t>(record.pc.code_object_offset)),
+                        insert_value("exec_mask", record.exec_mask),
+                        insert_value("code_object_id", record.pc.code_object_id),
+                        insert_value("code_object_offset", record.pc.code_object_offset),
                         insert_nullable_value("wave_issued", wave_issued),
                         insert_nullable_value("inst_type", inst_type),
                         insert_nullable_value("stall_reason", stall_reason),

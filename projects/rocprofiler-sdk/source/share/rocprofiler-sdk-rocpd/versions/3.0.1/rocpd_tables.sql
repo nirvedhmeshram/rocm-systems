@@ -1,3 +1,4 @@
+-- Copyright (c) 2026 Advanced Micro Devices, Inc. All rights reserved.
 -- RocPD schema version 3.0.1
 
 CREATE TABLE IF NOT EXISTS

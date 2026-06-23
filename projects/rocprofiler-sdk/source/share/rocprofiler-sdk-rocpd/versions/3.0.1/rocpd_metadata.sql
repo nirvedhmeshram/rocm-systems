@@ -1,3 +1,4 @@
+-- Copyright (c) 2026 Advanced Micro Devices, Inc. All rights reserved.
 --
 --  Standard metadata insertion
 --
