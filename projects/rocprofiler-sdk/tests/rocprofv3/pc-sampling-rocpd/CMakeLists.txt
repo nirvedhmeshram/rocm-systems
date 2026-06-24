@@ -58,11 +58,11 @@ rocprofiler_add_integration_execute_test(
     FIXTURES_SETUP rocprofv3-test-pc-sampling-rocpd
     DISABLED "${IS_PC_SAMPLING_DISABLED}")
 
-# Use rocpd2csv as requested to generate CSV from the rocpd DB.
+# Use rocpd convert to generate CSV from the rocpd DB.
 rocprofiler_add_integration_execute_test(
     rocprofv3-test-pc-sampling-rocpd-csv-generation
     COMMAND
-        ${Python3_EXECUTABLE} ${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR}/rocpd2csv -d
+        ${Python3_EXECUTABLE} -m rocpd convert -f csv -d
         ${CMAKE_CURRENT_BINARY_DIR}/pc-sampling-rocpd-csv -o out -i
         ${CMAKE_CURRENT_BINARY_DIR}/pc-sampling-rocpd-input/out_results.db
     DEPENDS rocprofiler-sdk::rocprofv3

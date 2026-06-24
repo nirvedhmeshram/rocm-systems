@@ -230,7 +230,11 @@ def setup_blob_views(conn):
             return None
 
     # deterministic=True lets SQLite cache and optimise calls across a query.
-    conn.create_function("rocpd_blob_field", 3, _rocpd_blob_field, deterministic=True)
+    # The keyword was added in Python 3.8; fall back for Python 3.6/3.7.
+    try:
+        conn.create_function("rocpd_blob_field", 3, _rocpd_blob_field, deterministic=True)
+    except TypeError:
+        conn.create_function("rocpd_blob_field", 3, _rocpd_blob_field)
 
     # ------------------------------------------------------------------
     # Step 3 – Create one TEMP VIEW per registered schema.
