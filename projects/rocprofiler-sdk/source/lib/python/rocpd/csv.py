@@ -410,7 +410,18 @@ def write_region_csv(importData, config) -> None:
     write_sql_query_to_csv(importData, config, query, "regions")
 
 
+def _table_exists(importData, table: str) -> bool:
+    """Return True when *table* is queryable; False for pre-3.0.2 schemas."""
+    try:
+        importData.execute(f"SELECT 1 FROM {table} LIMIT 0")
+        return True
+    except Exception:
+        return False
+
+
 def write_pc_sampling_host_trap_csv(importData, config) -> None:
+    if not _table_exists(importData, '"rocpd_gpu_pc_sample"'):
+        return
     query = """
         SELECT
             timestamp AS Sample_Timestamp,
@@ -427,6 +438,8 @@ def write_pc_sampling_host_trap_csv(importData, config) -> None:
 
 
 def write_pc_sampling_stochastic_csv(importData, config) -> None:
+    if not _table_exists(importData, '"rocpd_gpu_pc_sample"'):
+        return
     query = """
         SELECT
             timestamp AS Sample_Timestamp,
@@ -436,8 +449,39 @@ def write_pc_sampling_stochastic_csv(importData, config) -> None:
             instruction_comment AS Instruction_Comment,
             correlation_id AS Correlation_Id,
             wave_issued AS Wave_Issued_Instruction,
-            inst_type_name AS Instruction_Type,
-            stall_reason_name AS Stall_Reason,
+            CASE "inst_type"
+                WHEN 0  THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_TYPE_NONE'
+                WHEN 1  THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_TYPE_VALU'
+                WHEN 2  THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_TYPE_MATRIX'
+                WHEN 3  THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_TYPE_SCALAR'
+                WHEN 4  THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_TYPE_TEX'
+                WHEN 5  THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_TYPE_LDS'
+                WHEN 6  THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_TYPE_LDS_DIRECT'
+                WHEN 7  THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_TYPE_FLAT'
+                WHEN 8  THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_TYPE_EXPORT'
+                WHEN 9  THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_TYPE_MESSAGE'
+                WHEN 10 THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_TYPE_BARRIER'
+                WHEN 11 THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_TYPE_BRANCH_NOT_TAKEN'
+                WHEN 12 THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_TYPE_BRANCH_TAKEN'
+                WHEN 13 THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_TYPE_JUMP'
+                WHEN 14 THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_TYPE_OTHER'
+                WHEN 15 THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_TYPE_NO_INST'
+                WHEN 16 THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_TYPE_DUAL_VALU'
+                ELSE NULL
+            END AS Instruction_Type,
+            CASE "stall_reason"
+                WHEN 0 THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_NONE'
+                WHEN 1 THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_NO_INSTRUCTION_AVAILABLE'
+                WHEN 2 THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_ALU_DEPENDENCY'
+                WHEN 3 THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_WAITCNT'
+                WHEN 4 THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_INTERNAL_INSTRUCTION'
+                WHEN 5 THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_BARRIER_WAIT'
+                WHEN 6 THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_ARBITER_NOT_WIN'
+                WHEN 7 THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_ARBITER_WIN_EX_STALL'
+                WHEN 8 THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_OTHER_WAIT'
+                WHEN 9 THEN 'ROCPROFILER_PC_SAMPLING_INSTRUCTION_NOT_ISSUED_REASON_SLEEP_WAIT'
+                ELSE NULL
+            END AS Stall_Reason,
             wave_count AS Wave_Count
         FROM "rocpd_gpu_pc_sample"
         WHERE wave_issued IS NOT NULL

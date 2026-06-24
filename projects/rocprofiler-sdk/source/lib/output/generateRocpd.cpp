@@ -2323,10 +2323,8 @@ write_rocpd(
 
                 auto wave_issued       = std::optional<int64_t>{};
                 auto wave_count        = std::optional<int64_t>{};
-                auto inst_type         = std::optional<int64_t>{};
-                auto stall_reason      = std::optional<int64_t>{};
-                auto inst_type_name    = std::optional<std::string>{};
-                auto stall_reason_name = std::optional<std::string>{};
+                auto inst_type    = std::optional<int64_t>{};
+                auto stall_reason = std::optional<int64_t>{};
 
                 // Build the packed extdata blob from hw_id (always present) and
                 // arbiter-state snapshot (stochastic only).
@@ -2356,12 +2354,7 @@ write_rocpd(
                     wave_count     = static_cast<int64_t>(record.wave_count);
                     inst_type      = static_cast<int64_t>(record.inst_type);
                     stall_reason   = static_cast<int64_t>(record.snapshot.reason_not_issued);
-                    inst_type_name = std::string{rocprofiler_get_pc_sampling_instruction_type_name(
-                        static_cast<rocprofiler_pc_sampling_instruction_type_t>(record.inst_type))};
-                    stall_reason_name =
-                        std::string{rocprofiler_get_pc_sampling_instruction_not_issued_reason_name(
-                            static_cast<rocprofiler_pc_sampling_instruction_not_issued_reason_t>(
-                                record.snapshot.reason_not_issued))};
+
 
 #define SET_ARB_FIELD(FIELD)                                                                       \
     extdata.FIELD = static_cast<uint8_t>(static_cast<bool>(record.snapshot.FIELD) ? 1 : 0)
@@ -2433,8 +2426,7 @@ write_rocpd(
                         insert_nullable_value("wave_count", wave_count),
                         insert_nullable_value("instruction", inst),
                         insert_nullable_value("instruction_comment", inst_comment),
-                        insert_nullable_value("inst_type_name", inst_type_name),
-                        insert_nullable_value("stall_reason_name", stall_reason_name),
+
                     });
             }
         }

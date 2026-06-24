@@ -1930,7 +1930,8 @@ Querying PC sampling data
 ++++++++++++++++++++++++++
 
 Each PC sample event's ``parent_id`` in ``rocpd_event`` points to the dispatch
-event for the kernel being sampled:
+event for the kernel being sampled when ``--kernel-trace`` is active.
+``parent_id`` is ``NULL`` for samples collected without kernel-dispatch tracing:
 
 .. code-block:: bash
 
@@ -1947,7 +1948,7 @@ event for the kernel being sampled:
   FROM rocpd_gpu_pc_sample S
   JOIN rocpd_event E ON E.id = S.event_id"
 
-**VALU issue rate per kernel** (stochastic sampling):
+**VALU issue rate per kernel**:
 
 .. code-block:: bash
 
@@ -1972,7 +1973,7 @@ event for the kernel being sampled:
   ORDER BY PK.issued_valu_samples DESC
   LIMIT 20"
 
-**Dispatches with highest stall pressure** (stochastic sampling):
+**Dispatches with highest stall pressure**:
 
 .. code-block:: bash
 
@@ -1999,7 +2000,7 @@ event for the kernel being sampled:
   ORDER BY stall_samples DESC, samples DESC
   LIMIT 20"
 
-**Kernels with highest stall ratio** (stochastic sampling):
+**Kernels with highest stall ratio**:
 
 .. code-block:: bash
 
@@ -2042,7 +2043,7 @@ event for the kernel being sampled:
   ORDER BY samples_at_offset DESC
   LIMIT 50"
 
-**Instruction histogram per kernel** (hot vs. cold offsets):
+**Instruction histogram per kernel**:
 
 .. code-block:: bash
 
@@ -2071,7 +2072,7 @@ event for the kernel being sampled:
   LEFT JOIN rocpd_info_kernel_symbol KS ON KS.id = H.kernel_id
   ORDER BY H.kernel_id, H.sample_bucket"
 
-**Internal pipeline latency hole detection** (stochastic sampling):
+**Internal pipeline latency hole detection**:
 
 .. code-block:: bash
 
@@ -2095,7 +2096,7 @@ event for the kernel being sampled:
   per_pc AS (
     SELECT kernel_id, code_object_id, code_object_offset,
            COUNT(*) AS samples,
-           MIN(CASE WHEN inst_type='ROCPROFILER_PC_SAMPLING_INSTRUCTION_TYPE_NO_INST'
+           MIN(CASE WHEN inst_type=15 -- ROCPROFILER_PC_SAMPLING_INSTRUCTION_TYPE_NO_INST
                     THEN 1 ELSE 0 END) AS internal_pipeline,
            SUM(CASE WHEN dual_issue_valu=1 OR
                          arb_state_issue_valu=1 OR arb_state_issue_matrix=1 OR
@@ -2126,22 +2127,6 @@ event for the kernel being sampled:
   FROM per_pc
   WHERE internal_pipeline=1
   ORDER BY internal_latency_hole DESC, any_pipeline_issue_samples DESC, samples DESC"
-
-**Schema usage by agent and GFX target version:**
-
-.. code-block:: bash
-
-  rocpd query -i profile.db --query "
-  SELECT
-    A.name AS agent_name,
-    CAST(json_extract(A.extdata, '$.gfx_target_version') AS INTEGER) AS gfx_target_version,
-    BS.name AS schema_name, BS.version AS schema_version,
-    COUNT(*) AS samples
-  FROM rocpd_gpu_pc_sample PS
-  LEFT JOIN rocpd_info_agent A ON A.id = PS.agent_id
-  LEFT JOIN rocpd_info_blob_schema BS ON BS.id = PS.extdata_schema_id
-  GROUP BY A.name, gfx_target_version, PS.extdata_schema_id, BS.name, BS.version
-  ORDER BY samples DESC"
 
 For information about enabling PC sampling in ``rocprofv3``, see
 :ref:`using-pc-sampling` and :ref:`pc-sampling-rocpd-output`.

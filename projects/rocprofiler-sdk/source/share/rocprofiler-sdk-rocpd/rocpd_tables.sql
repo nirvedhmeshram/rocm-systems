@@ -309,8 +309,7 @@ CREATE TABLE IF NOT EXISTS
         "wave_count" INTEGER,
         "instruction" TEXT,
         "instruction_comment" TEXT,
-        "inst_type_name" TEXT,
-        "stall_reason_name" TEXT,
+
         FOREIGN KEY (nid) REFERENCES `rocpd_info_node{{uuid}}` (id) ON UPDATE CASCADE,
         FOREIGN KEY (pid) REFERENCES `rocpd_info_process{{uuid}}` (id) ON UPDATE CASCADE,
         FOREIGN KEY (tid) REFERENCES `rocpd_info_thread{{uuid}}` (id) ON UPDATE CASCADE,

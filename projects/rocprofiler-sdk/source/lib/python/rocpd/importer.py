@@ -50,7 +50,13 @@ def internal_init(_input, _output, skip_auto_merge, automerge_limit):
     _connection = libpyrocpd.connect(_output)
     _connection.execute("PRAGMA foreign_keys = ON")
     _table_info = _create_temp_views(_connection, _input)
-    _create_meta_views(_connection)
+    # When _input is empty (e.g. a missing file caused package.py to return []),
+    # _create_temp_views creates no TEMP VIEWs.  Calling _create_meta_views
+    # with uuid="" would then produce circularly-defined TEMP VIEWs because
+    # {{uuid}} renders as "" making every view reference its own name.  Skip it
+    # entirely; there is no data to set up views for anyway.
+    if _input:
+        _create_meta_views(_connection)
     return (_connection, _input, _table_info)
 
 
@@ -259,14 +265,25 @@ def setup_blob_views(conn):
         # (e.id = s.blob_event_id).  Tables that share event_id with
         # rocpd_blob_event (e.g. rocpd_gpu_pc_sample) join via that shared
         # FK (e.event_id = s.event_id).
+        # Always qualify the join with guid when present so that rows from
+        # different databases cannot cross-associate in merged UNION-ALL temp views.
+        has_guid = "guid" in domain_cols
         if "blob_event_id" in domain_cols:
-            join_on = "e.id = s.blob_event_id"
+            join_on = (
+                "e.id = s.blob_event_id AND e.guid = s.guid"
+                if has_guid
+                else "e.id = s.blob_event_id"
+            )
             # Exclude the raw FK from the projected columns.
             domain_select = ",\n    ".join(
                 f"s.{col}" for col in domain_cols if col != "blob_event_id"
             )
         elif "event_id" in domain_cols:
-            join_on = "e.event_id = s.event_id"
+            join_on = (
+                "e.event_id = s.event_id AND e.guid = s.guid"
+                if has_guid
+                else "e.event_id = s.event_id"
+            )
             domain_select = ",\n    ".join(f"s.{col}" for col in domain_cols)
         else:
             continue  # no usable join column; skip this table
