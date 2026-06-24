@@ -2268,6 +2268,7 @@ write_rocpd(
     auto insert_pc_sampling_data = [&db,
                                     node_id,
                                     this_pid,
+                                    &tool_metadata,
                                     &dispatch_to_evt_id,
                                     &dispatch_to_agent_id,
                                     &dispatch_to_thread_id](const auto& pc_sampling_gen,
@@ -2303,10 +2304,29 @@ write_rocpd(
                    dispatch_to_thread_id.at(record.dispatch_id).has_value())
                     tid = dispatch_to_thread_id.at(record.dispatch_id).value();
 
-                auto wave_issued  = std::optional<int64_t>{};
-                auto wave_count   = std::optional<int64_t>{};
-                auto inst_type    = std::optional<int64_t>{};
-                auto stall_reason = std::optional<int64_t>{};
+                // Decode instruction text (same logic as generateCSV.cpp).
+                // Use optional so empty strings become NULL without warnings.
+                auto inst         = std::optional<std::string>{};
+                auto inst_comment = std::optional<std::string>{};
+                if(itr.inst_index == -1)
+                {
+                    inst_comment = "Unrecognized code object id, physical virtual address of PC:" +
+                                   std::to_string(record.pc.code_object_offset);
+                }
+                else
+                {
+                    auto _inst = std::string{tool_metadata.get_instruction(itr.inst_index)};
+                    auto _comm = std::string{tool_metadata.get_comment(itr.inst_index)};
+                    if(!_inst.empty()) inst = std::move(_inst);
+                    if(!_comm.empty()) inst_comment = std::move(_comm);
+                }
+
+                auto wave_issued       = std::optional<int64_t>{};
+                auto wave_count        = std::optional<int64_t>{};
+                auto inst_type         = std::optional<int64_t>{};
+                auto stall_reason      = std::optional<int64_t>{};
+                auto inst_type_name    = std::optional<std::string>{};
+                auto stall_reason_name = std::optional<std::string>{};
 
                 // Build the packed extdata blob from hw_id (always present) and
                 // arbiter-state snapshot (stochastic only).
@@ -2332,10 +2352,16 @@ write_rocpd(
                                  common::mpl::unqualified_type_t<decltype(pc_sampling_gen)>,
                                  generator<rocprofiler_tool_pc_sampling_stochastic_record_t>>)
                 {
-                    wave_issued  = static_cast<int64_t>(record.wave_issued);
-                    wave_count   = static_cast<int64_t>(record.wave_count);
-                    inst_type    = static_cast<int64_t>(record.inst_type);
-                    stall_reason = static_cast<int64_t>(record.snapshot.reason_not_issued);
+                    wave_issued    = static_cast<int64_t>(record.wave_issued);
+                    wave_count     = static_cast<int64_t>(record.wave_count);
+                    inst_type      = static_cast<int64_t>(record.inst_type);
+                    stall_reason   = static_cast<int64_t>(record.snapshot.reason_not_issued);
+                    inst_type_name = std::string{rocprofiler_get_pc_sampling_instruction_type_name(
+                        static_cast<rocprofiler_pc_sampling_instruction_type_t>(record.inst_type))};
+                    stall_reason_name =
+                        std::string{rocprofiler_get_pc_sampling_instruction_not_issued_reason_name(
+                            static_cast<rocprofiler_pc_sampling_instruction_not_issued_reason_t>(
+                                record.snapshot.reason_not_issued))};
 
 #define SET_ARB_FIELD(FIELD)                                                                       \
     extdata.FIELD = static_cast<uint8_t>(static_cast<bool>(record.snapshot.FIELD) ? 1 : 0)
@@ -2397,7 +2423,7 @@ write_rocpd(
                         insert_nullable_value("agent_id", agent_id),
                         insert_value("event_id", static_cast<int64_t>(sample_event_id)),
                         insert_value("dispatch_id", record.dispatch_id),
-                        insert_value("correlation_id", record.correlation_id.external.value),
+                        insert_value("correlation_id", record.correlation_id.internal),
                         insert_value("exec_mask", record.exec_mask),
                         insert_value("code_object_id", record.pc.code_object_id),
                         insert_value("code_object_offset", record.pc.code_object_offset),
@@ -2405,6 +2431,10 @@ write_rocpd(
                         insert_nullable_value("inst_type", inst_type),
                         insert_nullable_value("stall_reason", stall_reason),
                         insert_nullable_value("wave_count", wave_count),
+                        insert_nullable_value("instruction", inst),
+                        insert_nullable_value("instruction_comment", inst_comment),
+                        insert_nullable_value("inst_type_name", inst_type_name),
+                        insert_nullable_value("stall_reason_name", stall_reason_name),
                     });
             }
         }

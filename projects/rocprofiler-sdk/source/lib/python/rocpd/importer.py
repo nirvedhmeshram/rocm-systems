@@ -254,11 +254,22 @@ def setup_blob_views(conn):
         except sqlite3.OperationalError:
             domain_cols = []
 
-        # Filter out the FK column itself from the domain projection; the
-        # decoded view consumers never need the raw integer id.
-        domain_select = ",\n    ".join(
-            f"s.{col}" for col in domain_cols if col != "blob_event_id"
-        )
+        # Determine join strategy from the domain column set.
+        # Tables with a blob_event_id FK join on the PK of rocpd_blob_event
+        # (e.id = s.blob_event_id).  Tables that share event_id with
+        # rocpd_blob_event (e.g. rocpd_gpu_pc_sample) join via that shared
+        # FK (e.event_id = s.event_id).
+        if "blob_event_id" in domain_cols:
+            join_on = "e.id = s.blob_event_id"
+            # Exclude the raw FK from the projected columns.
+            domain_select = ",\n    ".join(
+                f"s.{col}" for col in domain_cols if col != "blob_event_id"
+            )
+        elif "event_id" in domain_cols:
+            join_on = "e.event_id = s.event_id"
+            domain_select = ",\n    ".join(f"s.{col}" for col in domain_cols)
+        else:
+            continue  # no usable join column; skip this table
 
         # Build one expression per field registered for this schema.
         try:
@@ -287,7 +298,7 @@ def setup_blob_views(conn):
             f"    {domain_select}{separator}\n"
             f"    {blob_select}\n"
             f"FROM {source_table} s\n"
-            f"LEFT JOIN rocpd_blob_event e ON e.id = s.blob_event_id"
+            f"LEFT JOIN rocpd_blob_event e ON {join_on}"
         )
         try:
             conn.execute(view_sql)

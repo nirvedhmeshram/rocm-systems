@@ -25,7 +25,6 @@
 import csv
 import json
 import os
-import sqlite3
 
 import pytest
 
@@ -72,11 +71,10 @@ def rocpd_connection(request):
     if not filename or not os.path.isfile(filename):
         pytest.skip("rocPD input database not found")
 
-    conn = sqlite3.connect(filename)
-    try:
+    from rocpd.importer import RocpdImportData
+
+    with RocpdImportData(filename) as conn:
         yield conn
-    finally:
-        conn.close()
 
 
 @pytest.fixture

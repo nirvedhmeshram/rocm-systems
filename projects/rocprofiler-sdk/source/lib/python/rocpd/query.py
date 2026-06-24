@@ -26,7 +26,6 @@
 import os
 import sys
 import re
-import struct
 import time
 
 from typing import Union, Tuple, List, Optional
@@ -47,321 +46,46 @@ __all__ = [
 ]
 
 
-def _resolve_blob_format(is_integral: bool, is_signed: bool, size: int):
-    """Return a struct format character from (integral, signed, byte-size) attributes."""
-    if not is_integral:
-        return {4: "f", 8: "d"}.get(size)
-    if is_signed:
-        return {1: "b", 2: "h", 4: "i", 8: "q"}.get(size)
-    return {1: "B", 2: "H", 4: "I", 8: "Q"}.get(size)
-
-
 _BLOB_DECODED_SUFFIX = "_decoded"
 
 
-def _list_db_schemas(conn) -> List[str]:
-    rows = conn.execute("PRAGMA database_list").fetchall()
-    schemas = []
-    for itr in rows:
-        # PRAGMA database_list => seq, name, file
-        name = itr[1]
-        if isinstance(name, str) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
-            schemas.append(name)
-    # Ensure temp/main are checked first when available
-    ordered = [itr for itr in ("temp", "main") if itr in schemas]
-    ordered += [itr for itr in schemas if itr not in ordered]
-    return ordered
-
-
-def _master_table_ref(schema_name: str) -> str:
-    if schema_name == "temp":
-        return "sqlite_temp_master"
-    return f"{schema_name}.sqlite_master"
-
-
-def _resolve_table_name(conn, base_name: str) -> Optional[str]:
-    schemas = _list_db_schemas(conn)
-
-    # Exact match first, preferring temp/main schemas
-    for schema in schemas:
-        row = conn.execute(
-            f"SELECT name FROM {_master_table_ref(schema)} "
-            "WHERE type IN ('table','view') AND name = ? LIMIT 1",
-            (base_name,),
-        ).fetchone()
-        if row is not None:
-            return row[0]
-
-    # Fallback to UUID-suffixed match, prefer views then shorter names
-    candidates = []
-    for idx, schema in enumerate(schemas):
-        rows = conn.execute(
-            f"SELECT name, type FROM {_master_table_ref(schema)} "
-            "WHERE type IN ('table','view') AND name LIKE ?",
-            (f"{base_name}_%",),
-        ).fetchall()
-        for name, typ in rows:
-            type_rank = 0 if typ == "view" else 1
-            candidates.append((idx, type_rank, len(name), name))
-
-    if candidates:
-        candidates.sort()
-        return candidates[0][3]
-
-    return None
-
-
-def _get_column_names(conn, table_name: str) -> set:
-    rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-    return {itr[1] for itr in rows}
-
-
-def _load_all_blob_schemas(conn, schema_table: str, field_table: str):
-    """Return a dict mapping source_table -> (schema_map, ordered_field_list).
-
-    Falls back to loading all schemas without source_table filtering when the
-    column does not exist (older databases).
-    """
-    schema_cols = _get_column_names(conn, schema_table)
-    has_source_table = "source_table" in schema_cols
-
-    if has_source_table:
-        rows = conn.execute(f"""
-            SELECT
-                S.source_table,
-                S.id,
-                COALESCE(S.byte_order, 'little') AS byte_order,
-                F.name,
-                F.offset,
-                F.size,
-                F.data_type,
-                F.is_signed
-            FROM {schema_table} S
-            INNER JOIN {field_table} F ON F.schema_id = S.id
-            WHERE S.source_table IS NOT NULL
-            ORDER BY S.source_table, S.id, F.offset
-            """).fetchall()
-    else:
-        # Backward compatibility: older DBs without source_table column.
-        rows = conn.execute(f"""
-            SELECT
-                NULL AS source_table,
-                S.id,
-                COALESCE(S.byte_order, 'little') AS byte_order,
-                F.name,
-                F.offset,
-                F.size,
-                F.data_type,
-                F.is_signed
-            FROM {schema_table} S
-            INNER JOIN {field_table} F ON F.schema_id = S.id
-            ORDER BY S.id, F.offset
-            """).fetchall()
-
-    by_table = {}
-    for (
-        source_table,
-        schema_id,
-        byte_order,
-        name,
-        offset,
-        size,
-        data_type,
-        is_signed,
-    ) in rows:
-        key = source_table or "__unknown__"
-        if key not in by_table:
-            by_table[key] = {"schema_map": {}, "all_fields": [], "field_seen": set()}
-
-        entry = by_table[key]
-        schema_id = int(schema_id)
-        if schema_id not in entry["schema_map"]:
-            entry["schema_map"][schema_id] = {}
-
-        norm_type = str(data_type).strip().lower() if data_type is not None else ""
-        entry["schema_map"][schema_id][name] = {
-            "byte_order": byte_order,
-            "offset": int(offset),
-            "size": int(size),
-            "is_integral": norm_type not in ("float", "double", "float32", "float64"),
-            "is_signed": int(is_signed),
-        }
-
-        if name not in entry["field_seen"]:
-            entry["field_seen"].add(name)
-            entry["all_fields"].append(name)
-
-    return {k: (v["schema_map"], v["all_fields"]) for k, v in by_table.items()}
-
-
-def _make_blob_field_function(schema_map):
-    """Return a SQLite scalar function rocpd_blob_field(blob, schema_id, field_name)."""
-
-    def _blob_field(blob, schema_id, field_name):
-        if blob is None or schema_id is None or field_name is None:
-            return None
-
-        try:
-            schema_id = int(schema_id)
-        except Exception:
-            return None
-
-        field_info = schema_map.get(schema_id, {}).get(str(field_name))
-        if field_info is None:
-            return None
-
-        fmt = _resolve_blob_format(
-            field_info["is_integral"], bool(field_info["is_signed"]), field_info["size"]
-        )
-        if fmt is None:
-            return None
-
-        if isinstance(blob, memoryview):
-            blob = blob.tobytes()
-
-        offset = field_info["offset"]
-        size = field_info["size"]
-
-        if not isinstance(blob, (bytes, bytearray)):
-            return None
-
-        if len(blob) < (offset + size):
-            return None
-
-        endian = "<" if field_info["byte_order"].lower() != "big" else ">"
-        try:
-            return struct.unpack_from(f"{endian}{fmt}", blob, offset)[0]
-        except Exception:
-            return None
-
-    return _blob_field
-
-
 def setup_blob_views(conn, query: str = None, profile: bool = False):
-    """Create a TEMP VIEW for every blob schema registered in the database.
+    """Rewrite *query* replacing blob-source table references with their
+    ``_decoded`` TEMP VIEW counterparts.
 
-    For each source_table recorded in rocpd_info_blob_schema, creates a view
-    named ``{source_table}_decoded`` that exposes all base-table columns plus
-    one extra column per blob field decoded by the registered scalar function
-    ``rocpd_blob_field(blob, schema_id, field_name)``.
+    The decoded TEMP VIEWs and the ``rocpd_blob_field`` scalar function are
+    created during ``RocpdImportData`` initialisation by
+    :func:`importer.setup_blob_views`.  This function only rewrites the
+    query string so callers do not need to manually use the ``_decoded`` suffix.
 
-    If *query* is supplied, any reference to a registered base-table name is
-    rewritten to its decoded view name and the updated query is returned.
-    When no blob schemas are registered the function is a no-op and returns
+    When no blob schemas are registered, or *query* is ``None``, returns
     *query* unchanged.
     """
-    schema_table = _resolve_table_name(conn, "rocpd_info_blob_schema")
-    field_table = _resolve_table_name(conn, "rocpd_info_blob_field")
-    blob_event_table = _resolve_table_name(conn, "rocpd_blob_event")
+    import sqlite3
 
-    if not all([schema_table, field_table]):
+    _t0 = time.perf_counter() if profile else None
+
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT source_table FROM rocpd_info_blob_schema "
+            "WHERE source_table IS NOT NULL"
+        ).fetchall()
+    except sqlite3.OperationalError:
         return query
 
-    _t0 = time.perf_counter()
-
-    all_schemas = _load_all_blob_schemas(conn, schema_table, field_table)
-    if not all_schemas:
+    if not rows or not query:
         return query
 
-    # Build a single merged schema_map so one scalar function covers all tables.
-    merged_schema_map = {}
-    for schema_map, _ in all_schemas.values():
-        merged_schema_map.update(schema_map)
-
-    conn.create_function(
-        "rocpd_blob_field", 3, _make_blob_field_function(merged_schema_map)
-    )
-
-    views_created = []
-    for source_table, (schema_map, all_blob_fields) in all_schemas.items():
-        if source_table == "__unknown__":
-            continue  # skip legacy rows with no source_table
-
-        resolved_table = _resolve_table_name(conn, source_table)
-        if resolved_table is None:
-            continue
-
-        base_columns = _get_column_names(conn, resolved_table)
-        selected_fields = [f for f in all_blob_fields if f not in base_columns]
-        if not selected_fields:
-            continue
-
-        schema_ids = sorted(schema_map.keys())
-        schema_filter = (
-            " AND BE.schema_id IN (" + ", ".join(str(i) for i in schema_ids) + ")"
-            if schema_ids and blob_event_table
-            else ""
-        )
-
-        use_event_id = (
-            blob_event_table is not None
-            and "event_id" in base_columns
-            and "blob_event_id" not in base_columns
-        )
-        use_blob_event_id = (
-            blob_event_table is not None and "blob_event_id" in base_columns
-        )
-        use_inline = {"extdata_blob", "extdata_schema_id"}.issubset(base_columns)
-
-        computed_columns = ",\n        ".join(
-            f"rocpd_blob_field(BE.blob, BE.schema_id, '{f}') AS \"{f}\""
-            for f in selected_fields
-        )
-
+    for (source_table,) in rows:
         view_name = f"{source_table}{_BLOB_DECODED_SUFFIX}"
+        if re.search(rf"(?i)\b{re.escape(source_table)}\b", query) and not re.search(
+            rf"(?i)\b{re.escape(view_name)}\b", query
+        ):
+            query = re.sub(rf"(?i)\b{re.escape(source_table)}\b", view_name, query)
 
-        if use_event_id:
-            view_body = f"""
-        CREATE TEMP VIEW {view_name} AS
-        SELECT
-            {resolved_table}.*,
-            {computed_columns}
-        FROM {resolved_table}
-        LEFT JOIN {blob_event_table} BE ON BE.event_id = {resolved_table}.event_id{schema_filter}
-        """
-        elif use_blob_event_id:
-            view_body = f"""
-        CREATE TEMP VIEW {view_name} AS
-        SELECT
-            {resolved_table}.*,
-            {computed_columns}
-        FROM {resolved_table}
-        LEFT JOIN {blob_event_table} BE ON BE.id = {resolved_table}.blob_event_id{schema_filter}
-        """
-        elif use_inline:
-            inline_columns = ",\n        ".join(
-                f"rocpd_blob_field(extdata_blob, extdata_schema_id, '{f}') AS \"{f}\""
-                for f in selected_fields
-            )
-            view_body = f"""
-        CREATE TEMP VIEW {view_name} AS
-        SELECT
-            {resolved_table}.*,
-            {inline_columns}
-        FROM {resolved_table}
-        """
-        else:
-            continue
-
-        conn.execute(f"DROP VIEW IF EXISTS {view_name}")
-        conn.execute(view_body)
-        views_created.append((source_table, view_name, len(selected_fields)))
-
-    if not views_created:
-        return query
-
-    # Rewrite base-table references in the query to their decoded view names.
-    if query:
-        for source_table, view_name, _ in views_created:
-            if re.search(rf"(?i)\b{re.escape(source_table)}\b", query) and not re.search(
-                rf"(?i)\b{re.escape(view_name)}\b", query
-            ):
-                query = re.sub(rf"(?i)\b{re.escape(source_table)}\b", view_name, query)
-
-    if profile:
+    if profile and _t0 is not None:
         elapsed_ms = (time.perf_counter() - _t0) * 1000.0
-        names = [f"{t} -> {v}" for t, v, _ in views_created]
-        print(f"Blob view setup: {names}, elapsed={elapsed_ms:.2f} ms")
+        print(f"Blob view query rewrite: elapsed={elapsed_ms:.2f} ms")
 
     return query
 
@@ -432,6 +156,11 @@ def export_sqlite_query(
         # 3) Export based on format
         if export_format == "csv":
             import csv
+
+            # Preserve large integer formatting (e.g. Exec_Mask) as numeric so
+            # QUOTE_NONNUMERIC does not wrap them in quotes.
+            if "Exec_Mask" in df.columns:
+                df["Exec_Mask"] = pd.to_numeric(df["Exec_Mask"], errors="ignore")
 
             cols = [f"{itr}" for itr in df.columns.tolist()]
             col_names = (
