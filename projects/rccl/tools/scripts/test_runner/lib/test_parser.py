@@ -252,18 +252,40 @@ def parse_test_output(output):
     return results
 
 
+def _to_wrong(tok: str) -> int:
+    """
+    Parse a '#wrong' column value into an int.
+
+    rccl-tests prints 'N/A' (not a number) in the *in-place* #wrong column for
+    collectives that run no in-place correctness check — observed on
+    rccl-tests 2.29.7 for sendrecv_perf and alltoall_perf (every data row ends
+    in 'N/A').  Treat any non-numeric value as 0 wrong results rather than
+    discarding the whole row.
+    """
+    try:
+        return int(float(tok))
+    except (ValueError, TypeError):
+        return 0
+
+
 def parse_rccl_tests_perf_output(stdout: str, binary_name: str) -> list:
     """
     Parse rccl-tests *_perf binary stdout into a list of row dicts.
 
-    rccl-tests emits a columnar table.  Two formats exist:
+    rccl-tests emits a columnar table.  In current rccl-tests (e.g. 2.29.7)
+    EVERY collective prints the same 13-column layout — the redop/root columns
+    are always present, even for gather/alltoall/sendrecv style collectives:
 
-    Reduce-style (all_reduce_perf, reduce_perf, reduce_scatter_perf) — 13 data cols:
+    13-col layout (all_reduce, reduce, reduce_scatter, all_gather, broadcast,
+                   alltoall, sendrecv, scatter, gather):
         size  count  type  redop  root  oop_time  oop_algbw  oop_busbw  oop_wrong
                                         ip_time   ip_algbw   ip_busbw   ip_wrong
 
-    Gather-style (all_gather_perf, broadcast_perf, alltoall_perf, sendrecv_perf,
-                  scatter_perf, gather_perf) — 11 data cols:
+    The in-place #wrong column (parts[12]) is printed as 'N/A' for collectives
+    with no in-place validation pass (sendrecv, alltoall); _to_wrong() maps that
+    to 0 so those rows are still captured.
+
+    An older 11-col layout (no redop/root) is still tolerated as a fallback:
         size  count  type  oop_time  oop_algbw  oop_busbw  oop_wrong
                            ip_time   ip_algbw   ip_busbw   ip_wrong
 
@@ -295,11 +317,11 @@ def parse_rccl_tests_perf_output(stdout: str, binary_name: str) -> list:
                 oop_time  = float(parts[5])
                 oop_algbw = float(parts[6])
                 oop_busbw = float(parts[7])
-                oop_wrong = int(float(parts[8]))
+                oop_wrong = _to_wrong(parts[8])
                 ip_time   = float(parts[9])
                 ip_algbw  = float(parts[10])
                 ip_busbw  = float(parts[11])
-                ip_wrong  = int(float(parts[12]))
+                ip_wrong  = _to_wrong(parts[12])
             else:
                 # Gather-style: size count dtype
                 #               oop_t oop_alg oop_bw oop_wrong
@@ -308,11 +330,11 @@ def parse_rccl_tests_perf_output(stdout: str, binary_name: str) -> list:
                 oop_time  = float(parts[3])
                 oop_algbw = float(parts[4])
                 oop_busbw = float(parts[5])
-                oop_wrong = int(float(parts[6]))
+                oop_wrong = _to_wrong(parts[6])
                 ip_time   = float(parts[7])
                 ip_algbw  = float(parts[8])
                 ip_busbw  = float(parts[9])
-                ip_wrong  = int(float(parts[10]))
+                ip_wrong  = _to_wrong(parts[10])
         except (ValueError, IndexError):
             continue
 
