@@ -1,6 +1,6 @@
 // MIT License
 //
-// Copyright (c) 2023-2025 Advanced Micro Devices, Inc. All rights reserved.
+// Copyright (c) 2023-2026 Advanced Micro Devices, Inc. All rights reserved.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -23,13 +23,19 @@
 #include "lib/rocprofiler-sdk/agent.hpp"
 #include "lib/aqlprofile/aqlprofile.hpp"
 #include "lib/common/environment.hpp"
-#include "lib/common/filesystem.hpp"
 #include "lib/common/logging.hpp"
 #include "lib/common/scope_destructor.hpp"
 #include "lib/common/static_object.hpp"
 #include "lib/common/string_entry.hpp"
 #include "lib/common/utility.hpp"
 #include "lib/rocprofiler-sdk/hsa/agent_cache.hpp"
+#include "lib/rocprofiler-sdk/platform/agent.hpp"
+#ifdef _WIN32
+#    include "lib/rocprofiler-sdk/platform/windows/agent.hpp"
+#else
+#    include "lib/rocprofiler-sdk/platform/gnulinux/agent.hpp"
+#    include "lib/rocprofiler-sdk/platform/wsl/agent.hpp"
+#endif
 
 #include <rocprofiler-sdk/agent.h>
 #include <rocprofiler-sdk/fwd.h>
@@ -40,16 +46,11 @@
 #include <fmt/ranges.h>
 #include <hsa/hsa.h>
 #include <hsa/hsa_api_trace.h>
-#include <libdrm/amdgpu.h>
-#include <xf86drm.h>
 
-#include <fstream>
 #include <iomanip>
 #include <limits>
-#include <random>
 #include <set>
 #include <shared_mutex>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -63,38 +64,6 @@ namespace agent
 {
 namespace
 {
-namespace fs = ::rocprofiler::common::filesystem;
-
-uint64_t
-get_agent_offset()
-{
-    static uint64_t _v = []() {
-        auto gen = std::mt19937{std::random_device{}()};
-        auto rng = std::uniform_int_distribution<uint64_t>{std::numeric_limits<uint8_t>::max(),
-                                                           std::numeric_limits<uint16_t>::max()};
-        return rng(gen);
-    }();
-    return _v;
-}
-
-struct cpu_info
-{
-    long        processor   = -1;
-    long        family      = -1;
-    long        model       = -1;
-    long        physical_id = -1;
-    long        core_id     = -1;
-    long        apicid      = -1;
-    std::string vendor_id   = {};
-    std::string model_name  = {};
-
-    bool is_valid() const
-    {
-        return !(processor < 0 || family < 0 || model < 0 || physical_id < 0 || core_id < 0 ||
-                 apicid < 0 || vendor_id.empty() || model_name.empty());
-    }
-};
-
 struct bdf_info
 {
     uint32_t domain{};
@@ -103,304 +72,7 @@ struct bdf_info
     uint8_t  function{};
 };
 
-auto
-parse_cpu_info()
-{
-    auto ifs  = std::ifstream{"/proc/cpuinfo"};
-    auto data = std::vector<cpu_info>{};
-    if(!ifs) return data;
-
-    auto read_blocks = [&ifs]() {
-        auto blocks        = std::vector<std::vector<std::string>>{};
-        auto current_block = std::vector<std::string>{};
-        auto line          = std::string{};
-        while(std::getline(ifs, line))
-        {
-            if(ifs.eof())
-            {
-                if(!current_block.empty()) blocks.emplace_back(std::move(current_block));
-                break;
-            }
-
-            line = sdk::parse::strip(std::move(line), " \t\n\v\f\r");
-            if(line.empty())
-            {
-                if(!current_block.empty()) blocks.emplace_back(std::move(current_block));
-                current_block.clear();
-            }
-            else
-            {
-                current_block.emplace_back(line);
-            }
-        }
-        return blocks;
-    };
-
-    auto processor_blocks = read_blocks();
-    auto processor_info   = std::vector<cpu_info>{};
-    processor_info.reserve(processor_blocks.size());
-
-    for(const auto& bitr : processor_blocks)
-    {
-        auto info_v = cpu_info{};
-        for(const auto& itr : bitr)
-        {
-            auto match = sdk::parse::tokenize(itr, std::vector<std::string_view>{": "});
-            if(match.size() >= 2)
-            {
-                auto get_stol = [_label = std::string_view{itr}](const auto& _value) -> long {
-                    try
-                    {
-                        return std::stol(_value);
-                    } catch(std::exception& e)
-                    {
-                        ROCP_CI_LOG(WARNING) << fmt::format("rocprofiler-sdk agent encountered "
-                                                            "error while parsing CPU info '{}': {}",
-                                                            _label,
-                                                            e.what());
-                    }
-                    return 0;
-                };
-
-                // For cases with multiple colons, join all tokens after the first one
-                // e.g. "model name : AMD EPYC : 100-000000248" split into
-                // ["model name", "AMD EPYC", "100-000000248"] with the last two tokens joined
-                // back together with ": "
-                std::string value;
-                if(match.size() == 2)
-                {
-                    value = match.back();
-                }
-                else
-                {
-                    // Join all tokens after the first one with ": " separator
-                    for(size_t i = 1; i < match.size(); ++i)
-                    {
-                        if(i > 1) value += ": ";
-                        value += match[i];
-                    }
-                }
-
-                if(itr.find("vendor_id") == 0)
-                    info_v.vendor_id = value;
-                else if(itr.find("model name") == 0)
-                {
-                    info_v.model_name = value;
-                    // Remove leading and trailing whitespaces
-                    info_v.model_name =
-                        sdk::parse::strip(std::string{info_v.model_name}, " \t\n\v\f\r");
-                }
-                else if(itr.find("processor") == 0)
-                    info_v.processor = get_stol(value);
-                else if(itr.find("cpu family") == 0)
-                    info_v.family = get_stol(value);
-                else if(itr.find("model") == 0 && itr.find("model name") != 0)
-                    info_v.model = get_stol(value);
-                else if(itr.find("physical id") == 0)
-                    info_v.physical_id = get_stol(value);
-                else if(itr.find("core id") == 0)
-                    info_v.core_id = get_stol(value);
-                else if(itr.find("apicid") == 0)
-                    info_v.apicid = get_stol(value);
-            }
-            else
-            {
-                // Each processor_block is grouped by the presence of an empty line in /proc/cpuinfo
-                // so no checks for empty lines are performed inside this loop. If an empty line is
-                // found, that should be considered an error. Entries like "power management:" with
-                // no info (i.e. where the ":" is the last character on the line) can be ignored
-                auto last_colon_pos = itr.find_last_of(':');
-                ROCP_CI_LOG_IF(
-                    INFO, last_colon_pos < itr.length() && (last_colon_pos + 1) != itr.length())
-                    << fmt::format("Encountered unexpected /proc/cpuinfo line format: '{}'", itr);
-            }
-        }
-
-        if(info_v.is_valid())
-            processor_info.emplace_back(info_v);
-        else
-        {
-            ROCP_ERROR << "Invalid processor info: "
-                       << fmt::format("processor={}, vendor={}, family={}, model={}, name={}, "
-                                      "physical id={}, core id={}, apicid={}",
-                                      info_v.processor,
-                                      info_v.vendor_id,
-                                      info_v.family,
-                                      info_v.model,
-                                      info_v.model_name,
-                                      info_v.physical_id,
-                                      info_v.core_id,
-                                      info_v.apicid);
-        }
-    }
-
-    return processor_info;
-}
-
-auto&
-get_cpu_info()
-{
-    static auto _v = parse_cpu_info();
-    return _v;
-}
-
-// check to see if the file is readable
-bool
-is_readable(const fs::path& fpath)
-{
-    auto ec    = std::error_code{};
-    auto perms = fs::status(fpath, ec).permissions();
-    ROCP_ERROR_IF(ec) << fmt::format(
-        "Error getting status for file '{}': {}", fpath.string(), ec.message());
-    return (!ec && (perms & fs::perms::owner_read) != fs::perms::none);
-}
-
-auto
-read_file(const std::string& fname)
-{
-    auto data = std::vector<std::string>{};
-
-    if(!is_readable(fs::path{fname}))
-    {
-        ROCP_CI_LOG(WARNING) << fmt::format("file '{}' cannot be read", fname);
-        return data;
-    }
-
-    auto ifs = std::ifstream{fname};
-    if(!ifs || !ifs.good())
-    {
-        ROCP_CI_LOG(WARNING) << fmt::format("file '{}' cannot be read", fname);
-        return data;
-    }
-
-    while(true)
-    {
-        auto value = std::string{};
-        ifs >> value;
-        if(ifs.eof() || value.empty()) break;
-
-        data.emplace_back(value);
-    }
-
-    return data;
-}
-
-auto
-read_map(const std::string& fname)
-{
-    auto data = std::unordered_map<std::string, std::string>{};
-
-    if(!is_readable(fs::path{fname}))
-    {
-        ROCP_CI_LOG(WARNING) << fmt::format("file '{}' cannot be read", fname);
-        return data;
-    }
-
-    auto ifs = std::ifstream(fname);
-
-    if(!ifs || !ifs.good())
-    {
-        ROCP_CI_LOG(WARNING) << fmt::format("file '{}' cannot be read", fname);
-        return data;
-    }
-    auto last_label = std::string{};
-    while(ifs && ifs.good())
-    {
-        auto label = std::string{};
-        ifs >> label;
-        if(ifs.fail() || ifs.eof() || label.empty()) break;
-
-        auto entry = std::string{};
-        ifs >> entry;
-        if(ifs.fail() || ifs.eof())
-        {
-            ROCP_CI_LOG(WARNING) << fmt::format(
-                "unexpected file format in '{}' at {}", fname, label);
-            continue;
-        }
-
-        auto ret = data.emplace(label, entry);
-        if(!ret.second)
-        {
-            ROCP_CI_LOG(WARNING) << fmt::format(
-                "duplicate entry in '{}': '{}' (='{}'). last label was '{}'",
-                fname,
-                label,
-                entry,
-                last_label);
-            continue;
-        }
-
-        if(!label.empty()) last_label = std::move(label);
-    }
-
-    return data;
-}
-
-template <typename MapT, typename Tp>
-void
-read_property(const MapT& data, const std::string& label, Tp& value)
-{
-    using mutable_type = std::remove_const_t<Tp>;
-
-    get_agent_available_properties().insert(label);
-    if constexpr(std::is_enum<Tp>::value)
-    {
-        using value_type = std::underlying_type_t<mutable_type>;
-        // never expect this to be true but it does guard against infinite recursion
-        static_assert(!std::is_enum<value_type>::value, "Expected non-enum type");
-
-        auto value_v = static_cast<value_type>(value);
-        read_property(data, label, value_v);
-        if constexpr(std::is_const<Tp>::value)
-            const_cast<mutable_type&>(value) = static_cast<mutable_type>(value_v);
-        else
-            value = static_cast<Tp>(value_v);
-    }
-    else
-    {
-        static_assert(std::is_integral<Tp>::value, "Expected integral type");
-        using value_type = std::conditional_t<std::is_signed<Tp>::value, intmax_t, uintmax_t>;
-
-        if(data.find(label) == data.end())
-        {
-            ROCP_ERROR << "agent properties map missing " << label << " entry";
-            return;
-        }
-
-        auto       iss = std::istringstream{data.at(label)};
-        value_type local_value;
-        iss >> local_value;
-
-        // verify that we have used the correct data sizes
-        constexpr auto min_value = std::numeric_limits<Tp>::min();
-        constexpr auto max_value = std::numeric_limits<Tp>::max();
-        if(local_value < min_value)
-        {
-            ROCP_CI_LOG(WARNING) << fmt::format(
-                "data with label {} has a value (={}) which is less "
-                "than the min value for the type (={})",
-                label,
-                local_value,
-                min_value);
-            return;
-        }
-        else if(local_value > max_value)
-        {
-            ROCP_CI_LOG(WARNING) << fmt::format("data with label {} has a value (={}) which is "
-                                                "greater than the max value for the type (={})",
-                                                label,
-                                                local_value,
-                                                max_value);
-            return;
-        }
-
-        if constexpr(std::is_const<Tp>::value)
-            const_cast<mutable_type&>(value) = static_cast<mutable_type>(local_value);
-        else
-            value = static_cast<Tp>(local_value);
-    }
-}
+}  // namespace
 
 void
 update_agent_runtime_visibility(rocprofiler_agent_t& agent_info)
@@ -476,9 +148,10 @@ update_agent_runtime_visibility(rocprofiler_agent_t& agent_info)
         auto set_hip_visibility = [&agent_info](bool is_hip_visible) {
             if(is_hip_visible && agent_info.runtime_visibility.hsa == 0)
             {
-                ROCP_WARNING << fmt::format("Attempt to enable hip visiblity for agent-{} which is "
-                                            "not visible to HSA (ROCR)",
-                                            agent_info.node_id);
+                ROCP_WARNING << fmt::format(
+                    "Attempt to enable hip visibility for agent-{} which is "
+                    "not visible to HSA (ROCR)",
+                    agent_info.node_id);
                 return;
             }
 
@@ -613,73 +286,42 @@ update_agent_runtime_visibility(rocprofiler_agent_t& agent_info)
     }
 }
 
-using unique_agent_t = std::unique_ptr<rocprofiler_agent_t, void (*)(rocprofiler_agent_t*)>;
-
-auto
-read_topology()
+namespace
 {
-    auto data = std::vector<unique_agent_t>{};
+using unique_agent_t = ::rocprofiler::platform::unique_agent_t;
 
-    auto _sysfs_nodes_path = std::optional<fs::path>{};
-    for(auto itr : std::initializer_list<std::string>{
-            common::get_env("ROCPROFILER_KFD_TOPOLOGY", ""),  // rocprofiler-sdk specific
-            common::get_env("AMD_KFD_TOPOLOGY", ""),          // universal AMD KFD topology env var
-            common::get_env("HSA_MODEL_TOPOLOGY", ""),        // HSA specific env var
-            "/sys/devices/virtual/kfd/kfd/topology/nodes",
-            "/sys/class/kfd/kfd/topology/nodes",
-        })
+// Selects the platform enumerator at runtime.
+//
+// Linux builds compile only gnulinux/ and wsl/ (the WIN32 branch of
+// platform/CMakeLists.txt swaps in windows/), so only the enumerators built
+// into this binary are candidates here.
+//
+// Precedence on Linux:
+//   1. ROCPROFILER_FORCE_PLATFORM={gnulinux|wsl} overrides autodetect.
+//      Values not built into this binary are logged and ignored.
+//   2. gnulinux::is_available() (KFD sysfs present) - the common bare-metal
+//      Linux case, kept first to preserve existing behaviour byte-for-byte.
+//   3. wsl::is_available() (/dev/dxg + libdxcore.so) - WSL guest with the
+//      DXCore driver shimmed in.
+//   4. Fallback: gnulinux enumerator (will log and return an empty vector).
+//
+// Windows builds collapse to a single candidate (platform::windows).
+std::vector<unique_agent_t>
+enumerate_platform_agents()
+{
+    const auto forced = common::get_env("ROCPROFILER_FORCE_PLATFORM", std::string{});
+    if(!forced.empty())
     {
-        if(!itr.empty() && fs::exists(fs::path{itr}) && fs::is_directory(fs::path{itr}))
+#ifndef _WIN32
+        if(forced == "gnulinux")
         {
-            if(!_sysfs_nodes_path)
-            {
-                ROCP_INFO << fmt::format("Using KFD topology path '{}'", itr);
-                _sysfs_nodes_path = fs::path{itr};
-            }
+            ROCP_INFO << "agent topology: forced gnulinux via ROCPROFILER_FORCE_PLATFORM";
+            return platform::gnulinux::enumerate();
         }
-    }
-
-    auto sysfs_nodes_path =
-        _sysfs_nodes_path.value_or(fs::path{"/sys/class/kfd/kfd/topology/nodes"});
-
-    if(!fs::exists(sysfs_nodes_path))
-    {
-        ROCP_WARNING << fmt::format("sysfs nodes path '{}' does not exist",
-                                    sysfs_nodes_path.string());
-
-        return data;
-    }
-
-    const auto& cpu_info_v = get_cpu_info();
-    uint64_t    idcount    = 0;
-    uint64_t    nodecount  = 0;
-    uint64_t    cpucount   = 0;
-    uint64_t    gpucount   = 0;
-    uint64_t    unkcount   = 0;
-
-    while(true)
-    {
-        auto node_id   = nodecount++;
-        auto node_path = sysfs_nodes_path / std::to_string(node_id);
-        // assumes that nodes are monotonically increasing and thus once we are missing a node
-        // folder for a number, there are no more nodes
-        if(!fs::exists(node_path)) break;
-        // skip if we don't have permission to read the file
-        if(!is_readable(node_path)) continue;
-
-        auto properties  = std::unordered_map<std::string, std::string>{};
-        auto name_prop   = std::vector<std::string>{};
-        auto gpu_id_prop = std::vector<std::string>{};
-        try
+        if(forced == "wsl")
         {
-            properties  = read_map(node_path / "properties");
-            name_prop   = read_file(node_path / "name");
-            gpu_id_prop = read_file(node_path / "gpu_id");
-        } catch(std::runtime_error& e)
-        {
-            ROCP_ERROR << "Error reading '" << (node_path / "properties").string()
-                       << "' :: " << e.what();
-            continue;
+            ROCP_INFO << "agent topology: forced wsl via ROCPROFILER_FORCE_PLATFORM";
+            return platform::wsl::enumerate();
         }
 
         // we may have been able to open the properties file but if it was empty, we ignore it
@@ -973,50 +615,48 @@ read_topology()
 
         if(agent_info.io_links_count > 0)
         {
-            agent_info.io_links = new rocprofiler_agent_io_link_t[agent_info.io_links_count];
-
-            for(uint32_t i = 0; i < agent_info.io_links_count; ++i)
-            {
-                auto subproperties =
-                    read_map(node_path / "io_links" / std::to_string(i) / "properties");
-
-                read_property(subproperties, "type", agent_info.io_links[i].type);
-                read_property(subproperties, "version_major", agent_info.io_links[i].version_major);
-                read_property(subproperties, "version_minor", agent_info.io_links[i].version_minor);
-                read_property(subproperties, "node_from", agent_info.io_links[i].node_from);
-                read_property(subproperties, "node_to", agent_info.io_links[i].node_to);
-                read_property(subproperties, "weight", agent_info.io_links[i].weight);
-                read_property(subproperties, "min_latency", agent_info.io_links[i].min_latency);
-                read_property(subproperties, "max_latency", agent_info.io_links[i].max_latency);
-                read_property(subproperties, "min_bandwidth", agent_info.io_links[i].min_bandwidth);
-                read_property(subproperties, "max_bandwidth", agent_info.io_links[i].max_bandwidth);
-                read_property(subproperties,
-                              "recommended_transfer_size",
-                              agent_info.io_links[i].recommended_transfer_size);
-                read_property(subproperties, "flags", agent_info.io_links[i].flags.LinkProperty);
-            }
+            ROCP_INFO << "agent topology: forced windows via ROCPROFILER_FORCE_PLATFORM";
+            return platform::windows::enumerate();
         }
-
-        update_agent_runtime_visibility(agent_info);
-
-        data.emplace_back(new rocprofiler_agent_t{agent_info}, [](rocprofiler_agent_t* ptr) {
-            if(ptr)
-            {
-                delete[] ptr->mem_banks;
-                delete[] ptr->caches;
-                delete[] ptr->io_links;
-            }
-            delete ptr;
-        });
+#endif
+        ROCP_WARNING << fmt::format(
+            "agent topology: ROCPROFILER_FORCE_PLATFORM='{}' is not built into this binary "
+            "(expected gnulinux|wsl on Linux, windows on Windows); falling back to autodetect",
+            forced);
     }
-    return data;
+
+#ifndef _WIN32
+    if(platform::gnulinux::is_available())
+    {
+        ROCP_INFO << "agent topology: selected " << platform::gnulinux::name << " (sysfs present)";
+        return platform::gnulinux::enumerate();
+    }
+    if(platform::wsl::is_available())
+    {
+        ROCP_INFO << "agent topology: selected " << platform::wsl::name
+                  << " (libdxcore.so present)";
+        return platform::wsl::enumerate();
+    }
+    ROCP_WARNING << "agent topology: no platform matched; falling back to "
+                 << platform::gnulinux::name << " (will return empty)";
+    return platform::gnulinux::enumerate();
+#else
+    if(platform::windows::is_available())
+    {
+        ROCP_INFO << "agent topology: selected " << platform::windows::name;
+        return platform::windows::enumerate();
+    }
+    ROCP_WARNING << "agent topology: no platform matched; falling back to "
+                 << platform::windows::name << " (will return empty)";
+    return platform::windows::enumerate();
+#endif
 }
 
 auto&
 get_agent_topology()
 {
     static auto*& _v =
-        common::static_object<std::vector<unique_agent_t>>::construct(read_topology());
+        common::static_object<std::vector<unique_agent_t>>::construct(enumerate_platform_agents());
     return *CHECK_NOTNULL(_v);
 }
 
@@ -1453,7 +1093,7 @@ get_agent_available_properties()
 void
 internal_refresh_topology()
 {
-    auto _updated_topology = read_topology();
+    auto _updated_topology = enumerate_platform_agents();
     std::swap(get_agent_topology(), _updated_topology);
 }
 }  // namespace agent
