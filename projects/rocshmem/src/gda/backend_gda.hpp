@@ -170,7 +170,7 @@ class GDABackend : public Backend {
    * VAs, live SQ post counter address, depths, lkey/rkey/qpn) so an external
    * WQE builder can post directly into this QP. Returns false if unavailable.
    */
-  bool fill_qp_info(int peer, QpInfoC* out);
+  bool fill_qp_info(int peer, int ctx_id, QpInfoC* out);
 
   friend GDAContext;
 

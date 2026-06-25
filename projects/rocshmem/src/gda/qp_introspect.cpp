@@ -20,13 +20,24 @@ namespace rocshmem {
 
 extern Backend *backend;
 
-bool GDABackend::fill_qp_info(int peer, QpInfoC *out) {
+bool GDABackend::fill_qp_info(int peer, int ctx_id, QpInfoC *out) {
   if (out == nullptr) return false;
   if (peer < 0 || peer >= static_cast<int>(num_pes)) return false;
+  if (ctx_id < 0) return false;
   if (host_qps == nullptr || gpu_qps == nullptr || heap_rkey == nullptr) return false;
 
-  // One QP per (peer, qp_slot); take the first slot for this peer.
-  const int conn = peer * static_cast<int>(num_qps_per_pe);
+  // gpu_qps layout mirrors GDAContext's index math (context_gda_device.cpp):
+  //   ctx_id 0 = default context (used by rocSHMEM's own collectives)
+  //   ctx_id>0 = user contexts; pick one of those so our raw WQEs don't collide
+  //   with rocSHMEM's default-QP bookkeeping.
+  const int qpp = (ctx_id == 0) ? static_cast<int>(qps_per_pe_default_ctx_)
+                                : static_cast<int>(qps_per_pe_usr_ctx_);
+  const int off = (ctx_id == 0) ? 0
+                                : (static_cast<int>(qps_per_pe_default_ctx_) +
+                                   static_cast<int>(qps_per_pe_usr_ctx_) * (ctx_id - 1)) *
+                                      static_cast<int>(num_pes);
+  const int conn = off + peer * qpp;   // first QP slot for this peer in this ctx
+  if (conn < 0 || conn >= static_cast<int>(num_qps)) return false;
 
   // The QP field VALUES are written directly into gpu_qps[conn] (device memory)
   // by initialize_gpu_qp; host_qps[conn] is just the empty initial construct.
@@ -56,10 +67,10 @@ bool GDABackend::fill_qp_info(int peer, QpInfoC *out) {
   return true;
 }
 
-bool rocshmem_query_qp_info(int peer, QpInfoC *out) {
+bool rocshmem_query_qp_info(int peer, int ctx_id, QpInfoC *out) {
   if (backend == nullptr) return false;
   if (backend->get_type() != BackendType::GDA_BACKEND) return false;
-  return static_cast<GDABackend *>(backend)->fill_qp_info(peer, out);
+  return static_cast<GDABackend *>(backend)->fill_qp_info(peer, ctx_id, out);
 }
 
 }  // namespace rocshmem

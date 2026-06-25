@@ -499,11 +499,11 @@ PYBIND11_MODULE(_rocshmem4py, m) {
     return (intptr_t)rocshmem_get_device_ctx();
   }, "Return the default device context as an intptr_t.");
 
-  m.def("rocshmem_get_qp_info", [](int peer) -> py::dict {
+  m.def("rocshmem_get_qp_info", [](int peer, int ctx_id) -> py::dict {
     QpInfoC info{};
-    if (!rocshmem_query_qp_info(peer, &info)) {
+    if (!rocshmem_query_qp_info(peer, ctx_id, &info)) {
       throw std::runtime_error(
-          "rocshmem_get_qp_info: unavailable (not a GDA backend, or bad peer)");
+          "rocshmem_get_qp_info: unavailable (not a GDA backend, bad peer/ctx_id)");
     }
     py::dict d;
     d["sq_buf"]    = info.sq_buf;
@@ -519,7 +519,10 @@ PYBIND11_MODULE(_rocshmem4py, m) {
     d["qpn"]       = info.qpn;
     return d;
   }, "Per-peer GDA RC QP resources for an external WQE builder (sq/dbrec/bf/cq "
-     "device VAs, live sq_post addr, depths, lkey/rkey/qpn).", py::arg("peer"));
+     "device VAs, live sq_post addr, depths, lkey/rkey/qpn). ctx_id 0 = rocSHMEM's "
+     "default-context QP (used by its own collectives); ctx_id>0 = a user-context "
+     "QP, safe to post into without colliding with rocSHMEM's bookkeeping.",
+     py::arg("peer"), py::arg("ctx_id") = 0);
 
   // Constants
   m.attr("ROCSHMEM_SUCCESS") = py::int_(0);

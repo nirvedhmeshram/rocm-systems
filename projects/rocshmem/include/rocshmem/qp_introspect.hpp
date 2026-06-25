@@ -32,7 +32,7 @@ struct QpInfoC {
 
 /// Fill *out for the RC QP to `peer`. Returns false if the active backend is not
 /// the GDA backend (or `peer`/QP is unavailable). Collective-independent (host).
-bool rocshmem_query_qp_info(int peer, QpInfoC* out);
+bool rocshmem_query_qp_info(int peer, int ctx_id, QpInfoC* out);
 
 }  // namespace rocshmem
 
