@@ -39,7 +39,12 @@ def main():
         )
         if not replay_cfg.configured:
             sys.exit("ERROR: --replay needs DB connection args (--db-host/--db-dsn).")
-        sys.exit(replay_spool(replay_cfg, args.replay))
+        sys.exit(replay_spool(
+            replay_cfg, args.replay,
+            no_archive=getattr(args, 'no_archive', False),
+            ssh_target=getattr(args, 'archive_ssh', '') or None,
+            archive_dir=getattr(args, 'archive_dir', '') or None,
+        ))
 
     # Validate flag combinations
     if args.stop_on_rerun_failure and not args.rerun_failed:
@@ -89,6 +94,7 @@ def main():
                 num_nodes=sysinfo.get('num_nodes', 0),
                 hostnames=sysinfo.get('hostnames', []),
                 spool_file=getattr(args, 'spool_file', '') or None,
+                workspace_dir=getattr(executor, 'workspace_dir', '') or '',
             )
             if args.verbose:
                 print(f"[db] system info: gpu_arch={sysinfo.get('gpu_arch')} "
@@ -176,6 +182,18 @@ def main():
                 timed_out=executor.test_results.count(_TR.RESULT_TIMEOUT.value),
                 skipped=executor.test_results.count(_TR.RESULT_SKIPPED.value),
             )
+
+            # Worst-case loop closer: tar the workspace + spool into the 15-day
+            # archive (mirrors the war-room archive). Runs on every job so logs
+            # are always retained and recoverable. Best-effort — never fatal.
+            if not getattr(args, 'no_archive', False):
+                archive_fn = getattr(db_reporter, 'archive', None)
+                if callable(archive_fn):
+                    archive_fn(
+                        getattr(executor, 'workspace_dir', '') or '',
+                        ssh_target=getattr(args, 'archive_ssh', '') or None,
+                        archive_dir=getattr(args, 'archive_dir', '') or None,
+                    )
 
         # Generate coverage report
         if not args.coverage_report:

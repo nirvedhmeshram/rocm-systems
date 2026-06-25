@@ -166,6 +166,19 @@ Examples:
         self.parser.add_argument('--replay', type=str, default='',
             help="Push a previously spooled run file to the DB and exit. Use from "
                  "a host that can reach the DB (with the --db-* / --database args).")
+        # Tarball archive (15-day retention, mirrors the war-room archive). The
+        # workspace dir + spool file are tarred and pushed on every run so logs
+        # are always retained and recoverable.
+        self.parser.add_argument('--no-archive', action='store_true',
+            help="Skip tarballing the workspace + spool into the run archive.")
+        self.parser.add_argument('--archive-ssh', type=str,
+            default=os.environ.get('RCCL_TEST_ARCHIVE_SSH', ''),
+            help="ssh target for the run-archive tarball, e.g. 'gohan' (also "
+                 "RCCL_TEST_ARCHIVE_SSH). If unset, the tarball is stored locally.")
+        self.parser.add_argument('--archive-dir', type=str,
+            default=os.environ.get('RCCL_TEST_ARCHIVE_DIR', ''),
+            help="Destination dir for the run-archive tarball (also "
+                 "RCCL_TEST_ARCHIVE_DIR, default ~/test-run-archives).")
 
     def parse_arguments(self):
         """Parse command-line arguments"""

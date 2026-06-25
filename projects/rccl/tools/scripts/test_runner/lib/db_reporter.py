@@ -31,8 +31,11 @@ on whether DB reporting is enabled.
 
 import json
 import os
+import shutil
 import socket
+import subprocess
 import sys
+import tempfile
 import time
 from typing import Optional
 
@@ -158,6 +161,126 @@ def _finalize_run(cur, run_id: str, totals: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Archive helpers — tar the workspace + spool and push to a 15-day archive
+# (mirrors the war-room _archive() mechanism). Every helper is best-effort:
+# a tar/scp failure only warns, it never breaks a run that already succeeded.
+# ---------------------------------------------------------------------------
+
+DEFAULT_ARCHIVE_DIR = "~/test-run-archives"
+
+
+def _short_host(host: Optional[str]) -> str:
+    return (host or socket.gethostname()).split(".")[0]
+
+
+def _archive_name(tag: Optional[str], host: Optional[str]) -> str:
+    """Build the tarball name: testrun_<seq-or-runid-or-ts>_<short-host>.tar.gz."""
+    tag = tag or f"ts{int(time.time())}"
+    return f"testrun_{tag}_{_short_host(host)}.tar.gz"
+
+
+def _build_archive_tarball(artifacts_dir: Optional[str], spool_path: Optional[str],
+                           name: str) -> Optional[str]:
+    """Create <name> in the system tempdir containing the workspace dir AND the
+    spool file (whichever exist). Returns the tar path, or None if nothing could
+    be tarred. Never raises."""
+    tar_path = os.path.join(tempfile.gettempdir(), name)
+    args = ["tar", "czf", tar_path]
+    included = False
+    if artifacts_dir and os.path.isdir(artifacts_dir):
+        ap = os.path.abspath(artifacts_dir)
+        args += ["-C", os.path.dirname(ap), os.path.basename(ap)]
+        included = True
+    if spool_path and os.path.exists(spool_path):
+        sp = os.path.abspath(spool_path)
+        args += ["-C", os.path.dirname(sp), os.path.basename(sp)]
+        included = True
+    if not included:
+        print("[archive] WARNING: nothing to archive "
+              "(no workspace dir and no spool file).")
+        return None
+    try:
+        subprocess.run(args, check=True, capture_output=True)
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        print(f"[archive] WARNING: tar failed, skipping archive: {e}")
+        return None
+    return tar_path
+
+
+def _push_archive(tar_path: str, name: str, ssh_target: Optional[str],
+                  archive_dir: str) -> Optional[str]:
+    """Copy the tarball to its archive home. With an ssh target: mkdir + scp,
+    returning '<ssh>:<dir>/<name>'. With no target (or on scp failure): store
+    locally under the expanded archive dir, returning the local abs path. Never
+    raises."""
+    if ssh_target:
+        remote_dir = archive_dir
+        remote_path = f"{remote_dir.rstrip('/')}/{name}"
+        try:
+            subprocess.run(["ssh", ssh_target, f"mkdir -p {remote_dir}"],
+                           check=True, capture_output=True)
+            subprocess.run(["scp", "-q", tar_path, f"{ssh_target}:{remote_path}"],
+                           check=True, capture_output=True)
+            try:
+                os.remove(tar_path)
+            except OSError:
+                pass
+            return f"{ssh_target}:{remote_path}"
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            print(f"[archive] WARNING: scp to {ssh_target} failed, "
+                  f"storing tarball locally: {e}")
+    # No ssh target, or scp failed: store locally under the expanded archive dir.
+    local_dir = os.path.expanduser(archive_dir)
+    try:
+        os.makedirs(local_dir, exist_ok=True)
+        dest = os.path.join(local_dir, name)
+        shutil.move(tar_path, dest)
+        return os.path.abspath(dest)
+    except Exception as e:
+        print(f"[archive] WARNING: could not store tarball under {local_dir}: {e}")
+        return os.path.abspath(tar_path) if os.path.exists(tar_path) else None
+
+
+def archive_run(artifacts_dir: Optional[str], spool_path: Optional[str], name: str,
+                ssh_target: Optional[str], archive_dir: str) -> Optional[str]:
+    """Tar workspace+spool and push to the archive. Returns the stored path or
+    None. Never raises — the run already succeeded by the time we archive."""
+    tar_path = _build_archive_tarball(artifacts_dir, spool_path, name)
+    if not tar_path:
+        return None
+    return _push_archive(tar_path, name, ssh_target, archive_dir)
+
+
+def _record_archive_path(cfg: "DBConfig", run_id: str, path: str, tag: str = "archive") -> None:
+    """Set test_runs.raw_archive_path on a fresh connection. A firewalled node
+    may not reach the DB here — that's fine, the --replay path will set it
+    later. Never raises."""
+    try:
+        conn = cfg.connect()
+    except Exception as e:
+        print(f"[{tag}] note: could not record archive path "
+              f"(DB unreachable, --replay will set it later): {e}")
+        return
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE test_runs SET raw_archive_path=%s WHERE run_id=%s",
+                        (path, run_id))
+        conn.commit()
+        print(f"[{tag}] recorded raw_archive_path for run_id={run_id}")
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f"[{tag}] WARNING: failed to record archive path: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Live reporter — direct Postgres writes with on-disk spool + batch flush
 # ---------------------------------------------------------------------------
 
@@ -180,10 +303,12 @@ class DBReporter:
         num_nodes: int = 0,
         hostnames: Optional[list] = None,
         spool_file: Optional[str] = None,
+        workspace_dir: str = "",
     ) -> None:
         self.cfg = db_config
         self.config_file = config_file
         self.host = socket.gethostname()
+        self.workspace_dir = workspace_dir
         self.gpu_arch = gpu_arch
         self.rocm_version = rocm_version
         self.rccl_version = rccl_version
@@ -216,6 +341,10 @@ class DBReporter:
             "num_gpus": self.num_gpus or None,
             "num_nodes": self.num_nodes or None,
             "hostnames": self.hostnames or None,
+            # Recorded so a later --replay can re-tar the workspace (if it still
+            # exists) and set raw_archive_path after pushing. Ignored by the
+            # _insert_run_row INSERT, which only reads specific keys.
+            "workspace_dir": self.workspace_dir or None,
         }
 
     # ------------------------------------------------------------------
@@ -430,14 +559,49 @@ class DBReporter:
                 pass
             self._conn = None
 
+    # ------------------------------------------------------------------
+    # Archive (tar workspace + spool, push to the 15-day archive)
+    # ------------------------------------------------------------------
+
+    def archive(self, artifacts_dir: str,
+                ssh_target: Optional[str] = None,
+                archive_dir: Optional[str] = None) -> Optional[str]:
+        """Tar the workspace dir AND the spool file into one tarball and push it
+        to the archive (ssh+scp, else local). If the DB is reachable and we have
+        a run_id, record raw_archive_path. Best-effort — never raises."""
+        ssh_target = (ssh_target if ssh_target is not None
+                      else os.environ.get("RCCL_TEST_ARCHIVE_SSH"))
+        archive_dir = (archive_dir or os.environ.get("RCCL_TEST_ARCHIVE_DIR")
+                       or DEFAULT_ARCHIVE_DIR)
+        try:
+            name = _archive_name(self._run_id, self.host)
+            stored = archive_run(artifacts_dir or self.workspace_dir,
+                                 self._spool_path, name, ssh_target, archive_dir)
+        except Exception as e:  # belt-and-suspenders; helpers already swallow
+            print(f"[archive] WARNING: archive step failed: {e}")
+            return None
+        if not stored:
+            return None
+        print(f"[archive] stored run artifacts → {stored}")
+        if self._run_id:
+            _record_archive_path(self.cfg, self._run_id, stored)
+        return stored
+
 
 # ---------------------------------------------------------------------------
 # Replay — push a spooled run from a host that can reach the DB
 # ---------------------------------------------------------------------------
 
-def replay_spool(cfg: DBConfig, path: str) -> int:
+def replay_spool(cfg: DBConfig, path: str, no_archive: bool = False,
+                 ssh_target: Optional[str] = None,
+                 archive_dir: Optional[str] = None) -> int:
     """Read a spool file (written by DBReporter) and push the whole run to the
-    DB in a single transaction. Returns a process exit code (0 = success)."""
+    DB in a single transaction. Returns a process exit code (0 = success).
+
+    After a successful push, re-tar the workspace dir recorded in _meta (if it
+    still exists) plus the spool file, push it to the archive, and set
+    raw_archive_path — closing the worst-case loop for a run whose original host
+    could not reach either the DB or the archive."""
     if not os.path.exists(path):
         print(f"[replay] ERROR: spool file not found: {path}")
         return 1
@@ -478,6 +642,7 @@ def replay_spool(cfg: DBConfig, path: str) -> int:
     except Exception as e:
         print(f"[replay] ERROR: could not connect to database: {e}")
         return 1
+    run_id: Optional[str] = None
     try:
         with conn.cursor() as cur:
             run_id = _insert_run_row(cur, meta)
@@ -495,5 +660,20 @@ def replay_spool(cfg: DBConfig, path: str) -> int:
             conn.close()
         except Exception:
             pass
+
+    # Archive: re-tar the workspace (if the dir survived) + the spool file, push
+    # it to the archive home, and record raw_archive_path now that the DB is
+    # reachable from this host.
+    if not no_archive and run_id:
+        ssh = (ssh_target if ssh_target is not None
+               else os.environ.get("RCCL_TEST_ARCHIVE_SSH"))
+        adir = (archive_dir or os.environ.get("RCCL_TEST_ARCHIVE_DIR")
+                or DEFAULT_ARCHIVE_DIR)
+        name = _archive_name(run_id, meta.get("host"))
+        stored = archive_run(meta.get("workspace_dir"), path, name, ssh, adir)
+        if stored:
+            print(f"[replay] archived run artifacts → {stored}")
+            _record_archive_path(cfg, run_id, stored, tag="replay")
+
     print(f"[replay] done. You may now delete the spool file: {path}")
     return 0
