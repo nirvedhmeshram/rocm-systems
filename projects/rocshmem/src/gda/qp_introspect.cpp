@@ -46,7 +46,10 @@ bool GDABackend::fill_qp_info(int peer, QpInfoC *out) {
   out->cq_buf    = reinterpret_cast<uint64_t>(gq->mlx5_cq.buf);
   out->base_heap = static_cast<uint64_t>(gq->base_heap);
   out->sq_depth  = static_cast<uint32_t>(gq->mlx5_sq.depth);
-  out->cq_depth  = static_cast<uint32_t>(gq->mlx5_sq.depth) << 1;  // mlx5: ncqes ~= 2*sq
+  // mlx5 GDA CQ is created collapsed (cqe=1 + IGNORE_OVERRUN): all completions
+  // land at slot 0 with wqe_counter as the high-water mark. Report depth 1 so an
+  // external drain reads slot 0.
+  out->cq_depth  = 1;
   out->lkey      = gq->lkey;
   out->rkey      = heap_rkey[peer * num_nics_];                    // nic 0
   out->qpn       = gq->qp_num;
