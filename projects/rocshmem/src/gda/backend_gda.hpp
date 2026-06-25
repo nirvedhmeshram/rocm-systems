@@ -48,6 +48,7 @@ class GDAContext;
 class GDAHostContext;
 class QueuePair;
 class HostInterface;
+struct QpInfoC;  // rocshmem/qp_introspect.hpp
 
 inline constexpr uint32_t GDA_IONIC_VENDOR_ID = 0x1DD8;
 inline constexpr uint32_t GDA_MLX5_VENDOR_ID  = 0x02c9; //PCI-ID is 15b3
@@ -163,6 +164,13 @@ class GDABackend : public Backend {
 
  public:
   GDAProvider get_gda_provider() const { return gda_provider; }
+
+  /**
+   * @brief Fill *out with the per-peer RC QP resources (SQ/dbrec/BF/CQ device
+   * VAs, live SQ post counter address, depths, lkey/rkey/qpn) so an external
+   * WQE builder can post directly into this QP. Returns false if unavailable.
+   */
+  bool fill_qp_info(int peer, QpInfoC* out);
 
   friend GDAContext;
 

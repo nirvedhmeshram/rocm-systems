@@ -6,6 +6,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/pytypes.h>
 #include <rocshmem/rocshmem.hpp>
+#include <rocshmem/qp_introspect.hpp>
 #include <hip/hip_runtime.h>
 #include <cstdint>
 #include <cstring>
@@ -497,6 +498,28 @@ PYBIND11_MODULE(_rocshmem4py, m) {
   m.def("rocshmem_get_device_ctx", []() -> intptr_t {
     return (intptr_t)rocshmem_get_device_ctx();
   }, "Return the default device context as an intptr_t.");
+
+  m.def("rocshmem_get_qp_info", [](int peer) -> py::dict {
+    QpInfoC info{};
+    if (!rocshmem_query_qp_info(peer, &info)) {
+      throw std::runtime_error(
+          "rocshmem_get_qp_info: unavailable (not a GDA backend, or bad peer)");
+    }
+    py::dict d;
+    d["sq_buf"]    = info.sq_buf;
+    d["sq_post"]   = info.sq_post;
+    d["dbrec"]     = info.dbrec;
+    d["bf"]        = info.bf;
+    d["cq_buf"]    = info.cq_buf;
+    d["base_heap"] = info.base_heap;
+    d["sq_depth"]  = info.sq_depth;
+    d["cq_depth"]  = info.cq_depth;
+    d["lkey"]      = info.lkey;
+    d["rkey"]      = info.rkey;
+    d["qpn"]       = info.qpn;
+    return d;
+  }, "Per-peer GDA RC QP resources for an external WQE builder (sq/dbrec/bf/cq "
+     "device VAs, live sq_post addr, depths, lkey/rkey/qpn).", py::arg("peer"));
 
   // Constants
   m.attr("ROCSHMEM_SUCCESS") = py::int_(0);

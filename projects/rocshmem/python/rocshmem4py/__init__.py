@@ -75,6 +75,7 @@ try:
         rocshmem_dump_stats,
         rocshmem_reset_stats,
         rocshmem_get_device_ctx,
+        rocshmem_get_qp_info,
         # Constants
         ROCSHMEM_SUCCESS,
         ROCSHMEM_SIGNAL_SET,

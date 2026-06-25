@@ -32,6 +32,7 @@ target_sources(
     context_gda_device_coll.cpp
     context_gda_host.cpp
     backend_gda.cpp
+    qp_introspect.cpp
     ibv_wrapper.cpp
     gda_team.cpp
     queue_pair.cpp
