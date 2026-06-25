@@ -352,7 +352,7 @@ memory:
     disabled: [asan]
     tags: []
   Unit_hipMemcpy_DynamicQueueChurn_StagedCopies:
-    <<: *level_2
+    <<: *level_default
     tags: [multigpu, transfer]
   Unit_hipHostRegister_ReferenceFromKernelandhipMemset:
     <<: *level_default
@@ -398,7 +398,7 @@ memory:
     # Tests behaviour after free which throws off the sanitizer
     disabled: [asan]
   Unit_hipHostRegister_DuplicateAndDisjoint:
-    <<: *level_2
+    <<: *level_default
     tags: [alloc]
   Unit_hipHostRegister_Capture:
     <<: *level_default
