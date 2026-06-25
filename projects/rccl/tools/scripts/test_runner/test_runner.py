@@ -12,7 +12,7 @@ import logging
 from lib.test_parser import ArgumentParserInterface
 from lib.test_config import TestConfigProcessor
 from lib.test_executor import TestExecutor, glob_filter_matches
-from lib.db_reporter import DBReporter, NullDBReporter, DBConfig
+from lib.db_reporter import DBReporter, NullDBReporter, DBConfig, replay_spool
 
 # Configure logging
 logging.basicConfig(
@@ -26,6 +26,20 @@ def main():
     # Parse command-line arguments
     parser_interface = ArgumentParserInterface()
     args = parser_interface.process_arguments()
+
+    # --replay: push a previously spooled run and exit (no config/build/run needed).
+    if getattr(args, 'replay', ''):
+        replay_cfg = DBConfig(
+            dsn=getattr(args, 'db_dsn', '') or None,
+            host=getattr(args, 'db_host', '') or None,
+            port=getattr(args, 'db_port', '') or None,
+            user=getattr(args, 'db_user', '') or None,
+            db_password=getattr(args, 'db_password', None),
+            database=getattr(args, 'database', '') or None,
+        )
+        if not replay_cfg.configured:
+            sys.exit("ERROR: --replay needs DB connection args (--db-host/--db-dsn).")
+        sys.exit(replay_spool(replay_cfg, args.replay))
 
     # Validate flag combinations
     if args.stop_on_rerun_failure and not args.rerun_failed:
@@ -74,6 +88,7 @@ def main():
                 num_gpus=sysinfo.get('num_gpus', 0),
                 num_nodes=sysinfo.get('num_nodes', 0),
                 hostnames=sysinfo.get('hostnames', []),
+                spool_file=getattr(args, 'spool_file', '') or None,
             )
             if args.verbose:
                 print(f"[db] system info: gpu_arch={sysinfo.get('gpu_arch')} "

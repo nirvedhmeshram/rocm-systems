@@ -159,6 +159,13 @@ Examples:
                  "or prompted interactively.")
         self.parser.add_argument('--database', type=str, default='',
             help="Target database name (also RCCL_TEST_DB_NAME).")
+        self.parser.add_argument('--spool-file', type=str, default='',
+            help="Path for the on-disk results spool (also RCCL_TEST_DB_SPOOL). "
+                 "Results are written here so a run is never lost if the DB is "
+                 "unreachable; replay it later with --replay.")
+        self.parser.add_argument('--replay', type=str, default='',
+            help="Push a previously spooled run file to the DB and exit. Use from "
+                 "a host that can reach the DB (with the --db-* / --database args).")
 
     def parse_arguments(self):
         """Parse command-line arguments"""
