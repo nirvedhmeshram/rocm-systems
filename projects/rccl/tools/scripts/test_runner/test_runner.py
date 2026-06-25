@@ -53,7 +53,10 @@ def main():
             print("Exiting: Invalid flag combination")
         sys.exit(1)
 
-    # Validate config file exists
+    # Validate config (required to run tests; --replay already handled+exited above)
+    if not args.config:
+        print("ERROR: -c/--config is required to run tests (or use --replay to push a spooled run).")
+        sys.exit(1)
     if not os.path.exists(args.config):
         print(f"ERROR: Configuration file not found: {args.config}")
         if args.verbose:

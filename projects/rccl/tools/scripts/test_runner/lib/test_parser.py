@@ -58,8 +58,9 @@ Examples:
         self.parser.add_argument(
             '-c', '--config',
             type=str,
-            required=True,
-            help="Test configuration file (JSON format)"
+            default='',
+            help="Test configuration file (JSON format). Required to run tests; "
+                 "not needed with --replay."
         )
         self.parser.add_argument(
             '-v', '--verbose',
