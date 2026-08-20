@@ -109,6 +109,16 @@ set(BITCODE_COMPILE_FLAGS_BASE
     -std=c++17
     -emit-llvm
     -fvisibility=default
+    # Relocatable device code. Without it each translation unit is compiled as
+    # self-contained, so any __device__ function not reachable from a __global__
+    # kernel in that same TU is internalized and eliminated at -O3. That emptied
+    # this bitcode of every device-callable symbol: the extern "C" wrappers in
+    # src/device/rocshmem_wrapper.cc -- whose stated purpose is to give
+    # JIT/bitcode consumers (PyTorch/Triton) stable unmangled names -- compiled
+    # to zero symbols, and the Context/GDAContext implementations were dropped
+    # in their own TUs and left dangling as undefined references from the kernel
+    # TUs, so the shipped .bc could not be linked standalone.
+    -fgpu-rdc
     -O3
     -Xclang -mcode-object-version=none
     -I${CMAKE_CURRENT_SOURCE_DIR}/include/rocshmem
